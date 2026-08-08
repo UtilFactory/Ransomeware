@@ -1,0 +1,50 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>RansomUtilFactory.UI</AssemblyName>
+    <RootNamespace>RansomUtilFactory.UI</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <CommonBinDir>$(SolutionDir)x64\$(Configuration)\bin\</CommonBinDir>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(VCTargetsPath)' != ''">
+    <ProjectReference Include="..\uf_fltwarp\uf_fltwarp.vcxproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\UF_FileFilterFactory\UF_FileFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Target Name="CopyNativeLibrary" AfterTargets="Build">
+    <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll"
+          DestinationFolder="$(OutDir)"
+          Condition="Exists('$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll')" />
+  </Target>
+
+  <Target Name="CopyFileDriverPackage" AfterTargets="Build">
+    <ItemGroup>
+      <FileDriverPackage Include="$(SolutionDir)x64\$(Configuration)\UF_FileFilterFactory\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FileDriverPackage)"
+          DestinationFolder="$(OutDir)Drivers\UF_FileFilterFactory\%(RecursiveDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(FileDriverPackage)' != ''" />
+  </Target>
+
+  <Target Name="CopyWpfResultsToCommonBin" AfterTargets="Build">
+    <ItemGroup>
+      <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.exe" />
+      <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.dll" />
+      <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.deps.json" />
+      <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.runtimeconfig.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(CommonBinDir)" />
+    <Delete Files="$(CommonBinDir)RansomUtilFactory.UI.pdb" />
+    <Copy SourceFiles="@(WpfBuildResult)" DestinationFolder="$(CommonBinDir)"
+          SkipUnchangedFiles="true" Condition="'@(WpfBuildResult)' != ''" />
+  </Target>
+</Project>

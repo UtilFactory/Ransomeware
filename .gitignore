@@ -1,0 +1,32 @@
+﻿# Visual Studio 사용자별 파일
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# C/C++ 및 WDK 빌드 결과
+x64/
+Debug/
+Release/
+**/x64/
+*.obj
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.exp
+*.lib
+*.sys
+*.cat
+
+# .NET 빌드 결과
+**/bin/
+**/obj/
+
+# 드라이버 설치 및 임시 출력
+*.cer
+*.log
+*.tmp

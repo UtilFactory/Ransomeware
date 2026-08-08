@@ -1,0 +1,36 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 버전 17
+VisualStudioVersion = 17.0.0.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "UF_FileFilterFactory", "UF_FileFilterFactory\UF_FileFilterFactory.vcxproj", "{84066D62-42B7-4F2D-98C7-4920F48DB7D3}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "uf_fltwarp", "uf_fltwarp\uf_fltwarp.vcxproj", "{F739140D-8E54-4FBD-B218-3356AFE86329}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "UF_FileFilterTest", "UF_FileFilterTest\UF_FileFilterTest.vcxproj", "{71BB0785-8358-41F2-9D94-88BBC28E62E3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RansomUtilFactory.UI", "RansomUtilFactory.UI\RansomUtilFactory.UI.csproj", "{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{84066D62-42B7-4F2D-98C7-4920F48DB7D3}.Debug|x64.ActiveCfg = Debug|x64
+		{84066D62-42B7-4F2D-98C7-4920F48DB7D3}.Debug|x64.Build.0 = Debug|x64
+		{84066D62-42B7-4F2D-98C7-4920F48DB7D3}.Release|x64.ActiveCfg = Release|x64
+		{84066D62-42B7-4F2D-98C7-4920F48DB7D3}.Release|x64.Build.0 = Release|x64
+		{F739140D-8E54-4FBD-B218-3356AFE86329}.Debug|x64.ActiveCfg = Debug|x64
+		{F739140D-8E54-4FBD-B218-3356AFE86329}.Debug|x64.Build.0 = Debug|x64
+		{F739140D-8E54-4FBD-B218-3356AFE86329}.Release|x64.ActiveCfg = Release|x64
+		{F739140D-8E54-4FBD-B218-3356AFE86329}.Release|x64.Build.0 = Release|x64
+		{71BB0785-8358-41F2-9D94-88BBC28E62E3}.Debug|x64.ActiveCfg = Debug|x64
+		{71BB0785-8358-41F2-9D94-88BBC28E62E3}.Debug|x64.Build.0 = Debug|x64
+		{71BB0785-8358-41F2-9D94-88BBC28E62E3}.Release|x64.ActiveCfg = Release|x64
+		{71BB0785-8358-41F2-9D94-88BBC28E62E3}.Release|x64.Build.0 = Release|x64
+		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Debug|x64.ActiveCfg = Debug|x64
+		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Debug|x64.Build.0 = Debug|x64
+		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Release|x64.ActiveCfg = Release|x64
+		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+EndGlobal
