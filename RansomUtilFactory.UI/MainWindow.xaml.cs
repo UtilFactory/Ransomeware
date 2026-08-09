@@ -536,7 +536,8 @@ public partial class MainWindow : Window
                 folder.Path,
                 folder.AllowedProcesses
                     .Select(process => new AllowedProcessPolicySnapshot(
-                        process.Path, process.Access, process.RequireCodeSignature))
+                        process.Path, process.Access, process.RequireCodeSignature,
+                        process.MatchMode))
                     .ToArray()))
             .ToList();
 
@@ -679,6 +680,10 @@ public partial class MainWindow : Window
                             DisplayCompany = IntPtr.Zero
                         });
                     }
+                    if (allowedProcess.MatchMode == NativeMethods.UfProcessMatchImageName)
+                    {
+                        processFlags |= NativeMethods.UfProcessRuleFlagMatchImageName;
+                    }
 
                     IntPtr imagePathPointer = Marshal.StringToHGlobalUni(imagePath);
                     strings.Add(imagePathPointer);
@@ -778,7 +783,8 @@ public partial class MainWindow : Window
     private sealed record AllowedProcessPolicySnapshot(
         string Path,
         ushort Access,
-        bool RequireCodeSignature);
+        bool RequireCodeSignature,
+        int MatchMode);
 
     private void ClearPolicy_Click(object sender, RoutedEventArgs e)
     {
@@ -947,4 +953,6 @@ public sealed class AllowedProcessEntry
     }
 
     public bool RequireCodeSignature { get; set; } = true;
+
+    public int MatchMode { get; set; } = NativeMethods.UfProcessMatchFullPath;
 }

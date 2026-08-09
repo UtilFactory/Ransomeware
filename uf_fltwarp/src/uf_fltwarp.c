@@ -632,7 +632,7 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
         const UF_FLT_PROTECTED_PROCESS_INPUT* input = &Policy->ProtectedProcesses[index];
         UF_PROTECTED_PROCESS_RULE* process = &request->ProtectedProcesses[index];
         if (input->RuleId == 0 || input->FolderRuleId == 0 ||
-            (input->Reserved & (unsigned short)~UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 ||
+            (input->Reserved & (unsigned short)~UF_PROCESS_RULE_FLAG_ALLOWED_MASK) != 0 ||
             ((input->Reserved & UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 &&
                 input->SignerRuleId == 0) ||
             input->Access == PF_ACCESS_NONE ||

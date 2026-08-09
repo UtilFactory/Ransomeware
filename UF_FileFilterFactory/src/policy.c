@@ -3,18 +3,76 @@
 UF_POLICY gUfPolicy;
 UF_PROCESS_TRUST_ENTRY gUfTrustEntries[UF_MAX_PROCESS_TRUST_ENTRIES];
 
+static VOID
+UfGetImageLeaf(
+    _In_reads_(LengthChars) const WCHAR* Image,
+    _In_ ULONG LengthChars,
+    _Out_ const WCHAR** Leaf,
+    _Out_ ULONG* LeafLengthChars)
+{
+    ULONG index;
+    ULONG leafStart = 0;
+
+    for (index = 0; index < LengthChars; ++index) {
+        if (Image[index] == L'\\' || Image[index] == L'/') {
+            leafStart = index + 1;
+        }
+    }
+    *Leaf = Image + leafStart;
+    *LeafLengthChars = LengthChars - leafStart;
+}
+
+static WCHAR
+UfLowercaseImageCharacter(_In_ WCHAR Character)
+{
+    // 파일시스템 사전 콜백은 APC_LEVEL에서도 실행될 수 있으므로
+    // PASSIVE_LEVEL 전용 NLS API 대신 경로에 사용하는 ASCII 문자를 직접 정규화합니다.
+    if (Character >= L'A' && Character <= L'Z') {
+        return (WCHAR)(Character - L'A' + L'a');
+    }
+    return Character;
+}
+
 static BOOLEAN
 UfEqualImageRule(
     _In_ PCUNICODE_STRING ImageName,
     _In_reads_(ImageLengthChars) const WCHAR* Image,
-    _In_ ULONG ImageLengthChars)
+    _In_ ULONG ImageLengthChars,
+    _In_ USHORT RuleFlags)
 {
-    UNICODE_STRING configured;
+    const WCHAR* actualImage;
+    const WCHAR* configuredImage;
+    ULONG actualLengthChars;
+    ULONG configuredLengthChars;
+    ULONG index;
 
-    configured.Buffer = (PWCH)Image;
-    configured.Length = (USHORT)(ImageLengthChars * sizeof(WCHAR));
-    configured.MaximumLength = configured.Length;
-    return RtlEqualUnicodeString(ImageName, &configured, TRUE);
+    if (ImageName == NULL || ImageName->Buffer == NULL ||
+        Image == NULL || ImageLengthChars == 0 ||
+        (ImageName->Length % sizeof(WCHAR)) != 0) {
+        return FALSE;
+    }
+    actualImage = ImageName->Buffer;
+    configuredImage = Image;
+    actualLengthChars = ImageName->Length / sizeof(WCHAR);
+    configuredLengthChars = ImageLengthChars;
+    if (FlagOn(RuleFlags, UF_PROCESS_RULE_FLAG_MATCH_IMAGE_NAME)) {
+        UfGetImageLeaf(
+            actualImage, actualLengthChars,
+            &actualImage, &actualLengthChars);
+        UfGetImageLeaf(
+            configuredImage, configuredLengthChars,
+            &configuredImage, &configuredLengthChars);
+    }
+    if (actualLengthChars != configuredLengthChars) {
+        return FALSE;
+    }
+    for (index = 0; index < actualLengthChars; ++index) {
+        if (UfLowercaseImageCharacter(actualImage[index]) !=
+            UfLowercaseImageCharacter(configuredImage[index])) {
+            return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 static BOOLEAN
@@ -201,7 +259,7 @@ UfValidatePolicyRequest(_In_ const UF_REPLACE_POLICY_V2* Request)
         BOOLEAN requireCodeSignature;
 
         if (processRule->RuleId == 0 || processRule->FolderRuleId == 0 ||
-            (processRule->Reserved16 & (USHORT)~UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 ||
+            (processRule->Reserved16 & (USHORT)~UF_PROCESS_RULE_FLAG_ALLOWED_MASK) != 0 ||
             processRule->Access == PF_ACCESS_NONE ||
             FlagOn(processRule->Access, (USHORT)~PF_ACCESS_ALL) ||
             processRule->ImageLengthChars == 0 ||
@@ -307,7 +365,9 @@ UfPolicySetProcessTrust(_In_ const UF_PROCESS_TRUST_UPDATE* Update)
          FlagOn(processRule->Reserved16, UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE));
     if (Update->PolicyGeneration != gUfPolicy.Generation || processRule == NULL ||
         (requireCodeSignature && signerRule == NULL) ||
-        !UfEqualImageRule(processImage, processRule->Image, processRule->ImageLengthChars) ||
+        !UfEqualImageRule(
+            processImage, processRule->Image, processRule->ImageLengthChars,
+            processRule->Reserved16) ||
         !FlagOn(processRule->Access, Update->Access) ||
         (requireCodeSignature && signerRule->MatchType == UfSignerMatchThumbprintSha256 &&
          RtlCompareMemory(
@@ -429,7 +489,8 @@ UfPolicyEvaluate(
         Evaluation->MonitorOnly = TRUE;
         for (index = 0; index < gUfPolicy.MonitorExceptionCount; ++index) {
             const UF_IMAGE_RULE* exception = &gUfPolicy.MonitorExceptions[index];
-            if (UfEqualImageRule(ImageName, exception->Image, exception->ImageLengthChars)) {
+            if (UfEqualImageRule(
+                    ImageName, exception->Image, exception->ImageLengthChars, 0)) {
                 Evaluation->Matched = FALSE;
                 break;
             }
@@ -443,7 +504,9 @@ UfPolicyEvaluate(
         ULONGLONG now;
 
         if (processRule->FolderRuleId != folderRule->RuleId ||
-            !UfEqualImageRule(ImageName, processRule->Image, processRule->ImageLengthChars)) {
+            !UfEqualImageRule(
+                ImageName, processRule->Image, processRule->ImageLengthChars,
+                processRule->Reserved16)) {
             continue;
         }
         Evaluation->ProcessRuleMatched = TRUE;

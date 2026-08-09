@@ -17,6 +17,9 @@ internal static class NativeMethods
     internal const ushort PfAccessAll = 0x0003;
     internal const uint UfSignerMatchThumbprintSha256 = 1;
     internal const ushort UfProcessRuleFlagRequireCodeSignature = 0x0001;
+    internal const ushort UfProcessRuleFlagMatchImageName = 0x0002;
+    internal const int UfProcessMatchFullPath = 0;
+    internal const int UfProcessMatchImageName = 1;
     internal const ushort UfTrustAllow = 1;
     internal const ushort UfTrustDeny = 2;
     internal const uint UfRevocationTimeoutDeny = 0;
