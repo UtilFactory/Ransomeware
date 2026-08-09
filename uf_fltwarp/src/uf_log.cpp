@@ -39,20 +39,14 @@ std::string UfUtf8FromWide(const std::wstring& Text)
 
 std::wstring UfLogDirectory()
 {
-    HMODULE module = nullptr;
-    wchar_t modulePath[MAX_PATH] = {};
+    wchar_t processPath[MAX_PATH] = {};
     DWORD length = 0;
-    if (!GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&UfLogInitialize), &module)) {
+    // DLL이 로드된 경로가 아니라 호스트 프로세스 실행 경로를 사용한다.
+    length = GetModuleFileNameW(nullptr, processPath, ARRAYSIZE(processPath));
+    if (length == 0 || length >= ARRAYSIZE(processPath)) {
         return L"logs";
     }
-    length = GetModuleFileNameW(module, modulePath, ARRAYSIZE(modulePath));
-    if (length == 0 || length >= ARRAYSIZE(modulePath)) {
-        return L"logs";
-    }
-    std::wstring path(modulePath, length);
+    std::wstring path(processPath, length);
     size_t separator = path.find_last_of(L"\\/");
     if (separator == std::wstring::npos) {
         return L"logs";
