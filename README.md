@@ -73,10 +73,12 @@ WPF EXE·DLL·실행 구성 파일이 생성됩니다. PDB는 각 프로젝트�
 - `uf_fltwarp.log`: `uf_fltwarp.dll`의 연결·정책·이벤트 처리 로그
 - `UF_FileFilterTest.log`: C 시험 프로그램의 시작·명령·오류 로그
 - `RansomUtilFactory.UI.log`: WPF UI의 초기화·버튼 동작·예외 로그
+- `uf_fltwarp.bootstrap.log`: 네이티브 DLL 초기화가 멈출 때 단계 확인용 보조 로그
 
 로그 파일은 실행할 때 자동으로 생성되며, 파일 내용이나 자격 증명은 기록하지
 않습니다. DLL과 시험 프로그램은 정적 `log4cpp`를 사용하고, WPF UI는 `log4net`을
-사용합니다.
+사용합니다. `uf_fltwarp.bootstrap.log`는 `UfFltInitialize` 초기화 단계가 멈출
+때만 확인하는 보조 파일입니다.
 
 커널 드라이버를 `Debug | x64`로 빌드하면 시험 서명에 사용하는
 `UF_FileFilterFactory.cer`도 `x64\Debug\bin`에 복사됩니다. 테스트 인증서는

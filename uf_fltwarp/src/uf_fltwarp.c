@@ -168,8 +168,11 @@ UfReceiverMain(void* Parameter)
 unsigned long __stdcall
 UfFltInitialize(void)
 {
+    UfLogBootstrapWrite("UfFltInitialize 진입");
     UfLogInitialize();
+    UfLogBootstrapWrite("UfLogInitialize 호출 완료");
     UfLogWrite(UfLogInfo, "uf_fltwarp 초기화");
+    UfLogBootstrapWrite("UfLogWrite 호출 완료");
     return ERROR_SUCCESS;
 }
 

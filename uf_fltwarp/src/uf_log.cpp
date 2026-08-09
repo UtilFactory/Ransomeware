@@ -1,6 +1,7 @@
 ﻿#include <windows.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 
 #include <log4cpp/Category.hh>
@@ -95,11 +96,53 @@ void UfLogInitializeLocked()
 
 }
 
+extern "C" void UfLogBootstrapWrite(const char* Message)
+{
+    if (Message == nullptr) {
+        return;
+    }
+
+    std::wstring filePath = UfLogDirectory() + L"\\uf_fltwarp.bootstrap.log";
+    HANDLE file = CreateFileW(
+        filePath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        OutputDebugStringA(Message);
+        OutputDebugStringA("\n");
+        return;
+    }
+
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    char prefix[96] = {};
+    int prefixLength = _snprintf_s(
+        prefix, sizeof(prefix), _TRUNCATE,
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u [%lu] ",
+        time.wYear, time.wMonth, time.wDay,
+        time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+        GetCurrentThreadId());
+    if (prefixLength > 0) {
+        DWORD written = 0;
+        WriteFile(file, prefix, (DWORD)prefixLength, &written, nullptr);
+    }
+
+    DWORD messageLength = (DWORD)strlen(Message);
+    DWORD written = 0;
+    WriteFile(file, Message, messageLength, &written, nullptr);
+    WriteFile(file, "\r\n", 2, &written, nullptr);
+    CloseHandle(file);
+}
+
 extern "C" void UfLogInitialize(void)
 {
+    UfLogBootstrapWrite("UfLogInitialize 진입");
     AcquireSRWLockExclusive(&gLogLock);
+    UfLogBootstrapWrite("UfLogInitialize 잠금 획득");
     UfLogInitializeLocked();
+    UfLogBootstrapWrite("UfLogInitialize 내부 초기화 완료");
     ReleaseSRWLockExclusive(&gLogLock);
+    UfLogBootstrapWrite("UfLogInitialize 종료");
 }
 
 extern "C" void UfLogShutdown(void)

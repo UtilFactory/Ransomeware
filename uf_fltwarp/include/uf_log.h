@@ -13,6 +13,7 @@ enum UF_LOG_LEVEL {
 
 void UfLogInitialize(void);
 void UfLogShutdown(void);
+void UfLogBootstrapWrite(const char* Message);
 void UfLogWrite(int Level, const char* Message);
 void UfLogWriteFormat(int Level, const char* Format, ...);
 
