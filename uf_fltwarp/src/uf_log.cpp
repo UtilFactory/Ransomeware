@@ -72,6 +72,49 @@ log4cpp::Priority::Value UfLogPriority(int Level)
     }
 }
 
+const char* UfLogLevelName(int Level)
+{
+    switch (Level) {
+    case UfLogDebug:
+        return "DEBUG";
+    case UfLogWarn:
+        return "WARN";
+    case UfLogError:
+        return "ERROR";
+    default:
+        return "INFO";
+    }
+}
+
+void UfLogWriteFile(int Level, const char* Message)
+{
+    std::wstring filePath = UfLogDirectory() + L"\\" + UF_LOG_FILE_NAME;
+    HANDLE file = CreateFileW(
+        filePath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        OutputDebugStringA(Message);
+        OutputDebugStringA("\n");
+        return;
+    }
+
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    char line[1280] = {};
+    int lineLength = _snprintf_s(
+        line, sizeof(line), _TRUNCATE,
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] %s\r\n",
+        time.wYear, time.wMonth, time.wDay,
+        time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
+        UfLogLevelName(Level), Message);
+    if (lineLength > 0) {
+        DWORD written = 0;
+        WriteFile(file, line, (DWORD)lineLength, &written, nullptr);
+    }
+    CloseHandle(file);
+}
+
 void UfLogInitializeLocked()
 {
     if (gCategory != nullptr) {
@@ -163,9 +206,10 @@ extern "C" void UfLogWrite(int Level, const char* Message)
     }
     AcquireSRWLockExclusive(&gLogLock);
     UfLogInitializeLocked();
-    if (gCategory != nullptr) {
-        gCategory->log(UfLogPriority(Level), "%s", Message);
-    }
+    // UI 호스트에서 log4cpp 기록이 프로세스 초기화를 방해하지 않도록
+    // Win32 파일 기록을 기본 경로로 사용한다. log4cpp 초기화와 라이브러리
+    // 연결은 유지하여 기존 구성요소 호환성을 보존한다.
+    UfLogWriteFile(Level, Message);
     ReleaseSRWLockExclusive(&gLogLock);
 }
 
