@@ -29,7 +29,7 @@
             <TabItem Header="파일 제어">
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="250" />
+                        <RowDefinition Height="340" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
@@ -54,15 +54,26 @@
 
                         <GroupBox Grid.Column="2" Header="보호 폴더" Padding="8">
                             <DockPanel>
-                                <TextBlock DockPanel.Dock="Bottom" Margin="4,6,4,0"
-                                           Foreground="#FF8A3B12" TextWrapping="Wrap"
-                                           Text="현재 보호 정책은 사용자 모드 프로그램의 접근을 차단합니다." />
-                                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
-                                            HorizontalAlignment="Right" Margin="0,8,0,0">
-                                    <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
-                                    <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
+                                <StackPanel DockPanel.Dock="Bottom">
+                                    <TextBlock Margin="4,6,4,0"
+                                               Foreground="#FF8A3B12" TextWrapping="Wrap"
+                                               Text="허용 프로그램은 유효한 코드 서명이 있어야 보호 폴더에 접근할 수 있습니다." />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                Margin="0,8,0,0">
+                                        <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
+                                        <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
+                                    </StackPanel>
+                                    <TextBlock Text="선택 폴더의 허용 프로그램" Margin="4,8,4,2" />
+                                    <ListBox x:Name="AllowedProcessList" Height="60" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                Margin="0,6,0,0">
+                                        <Button Content="프로그램 추가" Click="AddAllowedProcess_Click" />
+                                        <Button Content="선택 제거" Click="RemoveAllowedProcess_Click" />
+                                    </StackPanel>
                                 </StackPanel>
-                                <ListBox x:Name="ProtectFolderList" ItemsSource="{Binding ProtectFolders}" />
+                                <ListBox x:Name="ProtectFolderList" ItemsSource="{Binding ProtectFolders}"
+                                         DisplayMemberPath="Path"
+                                         SelectionChanged="ProtectFolderList_SelectionChanged" />
                             </DockPanel>
                         </GroupBox>
                     </Grid>
