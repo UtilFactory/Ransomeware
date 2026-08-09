@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly NativeMethods.EventCallbackV2 _eventCallback;
     private bool _connected;
     private bool _receiverStarted;
+    private bool _policyOperationRunning;
 
     public ObservableCollection<string> MonitorFolders { get; } = [];
     public ObservableCollection<ProtectedFolderEntry> ProtectFolders { get; } = [];
@@ -496,9 +497,14 @@ public partial class MainWindow : Window
         UiLogger.Warn("허용 프로그램 제거 실패: 보호 폴더 또는 프로그램이 선택되지 않음");
     }
 
-    private void ApplyPolicy_Click(object sender, RoutedEventArgs e)
+    private async void ApplyPolicy_Click(object sender, RoutedEventArgs e)
     {
         UiLogger.Info("사용자가 정책 적용을 요청");
+        if (_policyOperationRunning)
+        {
+            UiLogger.Warn("정책 적용 요청 무시: 이전 작업이 아직 실행 중");
+            return;
+        }
         if (!_connected)
         {
             UiLogger.Warn("정책 적용 실패: 드라이버에 연결되지 않음");
@@ -524,11 +530,36 @@ public partial class MainWindow : Window
             return;
         }
 
+        List<string> monitorFolders = MonitorFolders.ToList();
+        List<ProtectedFolderPolicySnapshot> protectedFolders = ProtectFolders
+            .Select(folder => new ProtectedFolderPolicySnapshot(
+                folder.Path,
+                folder.AllowedProcesses
+                    .Select(process => new AllowedProcessPolicySnapshot(
+                        process.Path, process.Access, process.RequireCodeSignature))
+                    .ToArray()))
+            .ToList();
+
+        _policyOperationRunning = true;
+        ApplyPolicyButton.IsEnabled = false;
+        ClearPolicyButton.IsEnabled = false;
+        PolicyStatusText.Text = "정책 적용 중...";
+        UiLogger.Info("정책 적용 네이티브 호출 시작");
+
         uint error;
         string? validationMessage;
         try
         {
-            error = ReplacePolicyV2(out validationMessage);
+            PolicyApplyResult result = await Task.Run(() =>
+            {
+                string? message;
+                uint nativeError = ReplacePolicyV2(
+                    monitorFolders, protectedFolders, out message);
+                return new PolicyApplyResult(nativeError, message);
+            });
+            error = result.Error;
+            validationMessage = result.ValidationMessage;
+            UiLogger.Info($"정책 적용 네이티브 호출 완료 error={error}");
         }
         catch (Exception exception)
         {
@@ -536,6 +567,12 @@ public partial class MainWindow : Window
             MessageBox.Show(exception.Message, "정책 적용",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return;
+        }
+        finally
+        {
+            _policyOperationRunning = false;
+            ApplyPolicyButton.IsEnabled = true;
+            ClearPolicyButton.IsEnabled = true;
         }
         if (error != NativeMethods.ErrorSuccess)
         {
@@ -549,11 +586,14 @@ public partial class MainWindow : Window
             ShowNativeError("정책 적용", error);
             return;
         }
-        PolicyStatusText.Text = $"정책 적용됨: 감시 {MonitorFolders.Count}개, 보호 {ProtectFolders.Count}개";
-        UiLogger.Info($"정책 적용 성공 monitor={MonitorFolders.Count} protected={ProtectFolders.Count}");
+        PolicyStatusText.Text = $"정책 적용됨: 감시 {monitorFolders.Count}개, 보호 {protectedFolders.Count}개";
+        UiLogger.Info($"정책 적용 성공 monitor={monitorFolders.Count} protected={protectedFolders.Count}");
     }
 
-    private uint ReplacePolicyV2(out string? validationMessage)
+    private uint ReplacePolicyV2(
+        IReadOnlyList<string> monitorFolders,
+        IReadOnlyList<ProtectedFolderPolicySnapshot> protectFolders,
+        out string? validationMessage)
     {
         validationMessage = null;
         List<IntPtr> strings = [];
@@ -564,11 +604,11 @@ public partial class MainWindow : Window
         {
             List<(uint RuleId, uint Mode, string Path)> pathRules = [];
             uint nextFolderRuleId = 1000;
-            foreach (string path in MonitorFolders)
+            foreach (string path in monitorFolders)
             {
                 pathRules.Add((nextFolderRuleId++, NativeMethods.UfRuleMonitor, path));
             }
-            foreach (ProtectedFolderEntry folder in ProtectFolders)
+            foreach (ProtectedFolderPolicySnapshot folder in protectFolders)
             {
                 pathRules.Add((nextFolderRuleId++, NativeMethods.UfRuleProtected, folder.Path));
             }
@@ -582,14 +622,14 @@ public partial class MainWindow : Window
                     StringComparer.OrdinalIgnoreCase);
             uint nextProcessRuleId = 3000;
             uint nextSignerRuleId = 4000;
-            foreach (ProtectedFolderEntry folder in ProtectFolders)
+            foreach (ProtectedFolderPolicySnapshot folder in protectFolders)
             {
                 if (!folderIds.TryGetValue(folder.Path, out uint folderRuleId))
                 {
                     validationMessage = $"보호 폴더 규칙을 만들 수 없습니다: {folder.Path}";
                     return 87;
                 }
-                foreach (AllowedProcessEntry allowedProcess in folder.AllowedProcesses)
+                foreach (AllowedProcessPolicySnapshot allowedProcess in folder.AllowedProcesses)
                 {
                     string imagePath = allowedProcess.Path;
                     if (imagePath.Length >= 260)
@@ -715,6 +755,17 @@ public partial class MainWindow : Window
             }
         }
     }
+
+    private sealed record PolicyApplyResult(uint Error, string? ValidationMessage);
+
+    private sealed record ProtectedFolderPolicySnapshot(
+        string Path,
+        IReadOnlyList<AllowedProcessPolicySnapshot> AllowedProcesses);
+
+    private sealed record AllowedProcessPolicySnapshot(
+        string Path,
+        ushort Access,
+        bool RequireCodeSignature);
 
     private void ClearPolicy_Click(object sender, RoutedEventArgs e)
     {

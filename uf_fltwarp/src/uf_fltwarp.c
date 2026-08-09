@@ -25,6 +25,21 @@ static UF_FLT_EVENT_CALLBACK gCallback = NULL;
 static UF_FLT_EVENT_CALLBACK_V2 gCallbackV2 = NULL;
 static void* gCallbackContext = NULL;
 
+// 커널 응답이 반환되지 않아도 사용자 모드 호출이 무한 대기하지 않도록 제한합니다.
+#define UF_FILTER_SEND_TIMEOUT_MILLISECONDS 5000UL
+
+typedef struct _UF_SEND_CONTEXT {
+    HANDLE Port;
+    HANDLE CompleteEvent;
+    void* Request;
+    unsigned long RequestSize;
+    void* Reply;
+    unsigned long ReplySize;
+    unsigned long BytesReturned;
+    HRESULT Result;
+    volatile LONG References;
+} UF_SEND_CONTEXT;
+
 static unsigned long UfStartEventReceiverInternal(
     UF_FLT_EVENT_CALLBACK Callback,
     UF_FLT_EVENT_CALLBACK_V2 CallbackV2,
@@ -284,6 +299,48 @@ UfFltDosPathToNtPath(
     return ERROR_SUCCESS;
 }
 
+static void
+UfReleaseSendContext(_In_ UF_SEND_CONTEXT* Context)
+{
+    if (InterlockedDecrement(&Context->References) != 0) {
+        return;
+    }
+    if (Context->CompleteEvent != NULL) {
+        CloseHandle(Context->CompleteEvent);
+    }
+    if (Context->Port != NULL && Context->Port != INVALID_HANDLE_VALUE) {
+        CloseHandle(Context->Port);
+    }
+    if (Context->Request != NULL) {
+        SecureZeroMemory(Context->Request, Context->RequestSize);
+        HeapFree(GetProcessHeap(), 0, Context->Request);
+    }
+    if (Context->Reply != NULL) {
+        SecureZeroMemory(Context->Reply, Context->ReplySize);
+        HeapFree(GetProcessHeap(), 0, Context->Reply);
+    }
+    HeapFree(GetProcessHeap(), 0, Context);
+}
+
+static DWORD WINAPI
+UfSendRequestThread(_In_ void* Parameter)
+{
+    UF_SEND_CONTEXT* context = (UF_SEND_CONTEXT*)Parameter;
+
+    context->BytesReturned = 0;
+    context->Result = FilterSendMessage(
+        context->Port,
+        context->Request,
+        context->RequestSize,
+        context->ReplySize == 0 ? NULL : context->Reply,
+        context->ReplySize,
+        &context->BytesReturned);
+    UfLogBootstrapWrite("FilterSendMessage 종료");
+    SetEvent(context->CompleteEvent);
+    UfReleaseSendContext(context);
+    return 0;
+}
+
 static unsigned long
 UfSendRequest(
     const void* Request,
@@ -292,10 +349,13 @@ UfSendRequest(
     unsigned long ReplySize,
     unsigned long* ReplySizeReturned)
 {
-    HRESULT sendResult;
+    UF_SEND_CONTEXT* context = NULL;
     HANDLE port;
-    DWORD bytesReturned = 0;
+    HANDLE duplicatedPort = NULL;
+    HANDLE thread = NULL;
+    DWORD waitResult;
     const UF_MESSAGE_HEADER* header = (const UF_MESSAGE_HEADER*)Request;
+    unsigned long result;
 
     if (Request == NULL || RequestSize < sizeof(UF_MESSAGE_HEADER)) {
         UfLogWrite(UfLogError, "잘못된 통신 요청 인수");
@@ -310,20 +370,91 @@ UfSendRequest(
         UfLogWrite(UfLogWarn, "통신 요청 실패: 연결되지 않음");
         return ERROR_INVALID_HANDLE;
     }
-    sendResult = FilterSendMessage(
-        port, (LPVOID)Request, RequestSize,
-        Reply, ReplySize, &bytesReturned);
+    if (!DuplicateHandle(
+            GetCurrentProcess(), port,
+            GetCurrentProcess(), &duplicatedPort,
+            0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        result = GetLastError();
+        ReleaseSRWLockShared(&gLock);
+        UfLogWriteFormat(UfLogError,
+            "통신 포트 핸들 복제 실패 error=%lu", result);
+        return result;
+    }
     ReleaseSRWLockShared(&gLock);
+
+    context = (UF_SEND_CONTEXT*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*context));
+    if (context == NULL) {
+        CloseHandle(duplicatedPort);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    context->Port = duplicatedPort;
+    context->RequestSize = RequestSize;
+    context->ReplySize = ReplySize;
+    context->References = 2;
+    context->Request = HeapAlloc(GetProcessHeap(), 0, RequestSize);
+    if (context->Request == NULL) {
+        UfReleaseSendContext(context);
+        UfReleaseSendContext(context);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    CopyMemory(context->Request, Request, RequestSize);
+    if (ReplySize != 0) {
+        context->Reply = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ReplySize);
+        if (context->Reply == NULL) {
+            UfReleaseSendContext(context);
+            UfReleaseSendContext(context);
+            return ERROR_NOT_ENOUGH_MEMORY;
+        }
+    }
+    context->CompleteEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (context->CompleteEvent == NULL) {
+        result = GetLastError();
+        UfReleaseSendContext(context);
+        UfReleaseSendContext(context);
+        return result;
+    }
+
+    UfLogBootstrapWrite("FilterSendMessage 시작");
+    thread = CreateThread(NULL, 0, UfSendRequestThread, context, 0, NULL);
+    if (thread == NULL) {
+        result = GetLastError();
+        UfReleaseSendContext(context);
+        UfReleaseSendContext(context);
+        return result;
+    }
+    waitResult = WaitForSingleObject(
+        context->CompleteEvent, UF_FILTER_SEND_TIMEOUT_MILLISECONDS);
+    if (waitResult == WAIT_TIMEOUT) {
+        // 작업 스레드는 자체 참조를 보유하므로 요청 버퍼를 안전하게 정리합니다.
+        UfLogBootstrapWrite("FilterSendMessage 시간 제한");
+        CloseHandle(thread);
+        UfReleaseSendContext(context);
+        return ERROR_TIMEOUT;
+    }
+    if (waitResult != WAIT_OBJECT_0) {
+        result = GetLastError();
+        CloseHandle(thread);
+        UfReleaseSendContext(context);
+        return result == ERROR_SUCCESS ? ERROR_GEN_FAILURE : result;
+    }
+
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    if (Reply != NULL && ReplySize != 0 && context->Reply != NULL) {
+        CopyMemory(Reply, context->Reply, ReplySize);
+    }
     if (ReplySizeReturned != NULL) {
-        *ReplySizeReturned = bytesReturned;
+        *ReplySizeReturned = context->BytesReturned;
     }
-    if (FAILED(sendResult)) {
-        unsigned long error = UfResultFromHresult(sendResult);
+    result = SUCCEEDED(context->Result)
+        ? ERROR_SUCCESS : UfResultFromHresult(context->Result);
+    if (FAILED(context->Result)) {
         UfLogWriteFormat(UfLogError, "통신 요청 실패 command=%lu error=%lu",
-            header->Command, error);
-        return error;
+            header->Command, result);
     }
-    return ERROR_SUCCESS;
+    UfReleaseSendContext(context);
+    return result;
 }
 
 static int
@@ -522,7 +653,9 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
         }
         process->ImageLengthChars = (unsigned long)wcslen(process->Image);
     }
+    UfLogBootstrapWrite("V2 정책 요청 전송 시작");
     result = UfSendRequest(request, sizeof(*request), NULL, 0, NULL);
+    UfLogBootstrapWrite("V2 정책 요청 전송 완료");
 
 Exit:
     SecureZeroMemory(request, sizeof(*request));

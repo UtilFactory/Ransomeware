@@ -130,8 +130,8 @@
                                        VerticalAlignment="Center" Margin="0,0,12,0"
                                        TextWrapping="Wrap" />
                             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button Content="정책 적용" Click="ApplyPolicy_Click" />
-                                <Button Content="정책 초기화" Click="ClearPolicy_Click" />
+                                <Button x:Name="ApplyPolicyButton" Content="정책 적용" Click="ApplyPolicy_Click" />
+                                <Button x:Name="ClearPolicyButton" Content="정책 초기화" Click="ClearPolicy_Click" />
                                 <Button Content="로그 지우기" Click="ClearLog_Click" />
                             </StackPanel>
                         </Grid>
