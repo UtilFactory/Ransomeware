@@ -22,8 +22,12 @@
     <TargetName>uf_fltwarp</TargetName>
     <CommonBinDir>$(SolutionDir)x64\$(Configuration)\bin\</CommonBinDir>
   </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary></ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
       <PreprocessorDefinitions>UF_FLTWARP_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_FileFilterFactory\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

@@ -17,12 +17,16 @@
     <ConfigurationType>Application</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary></ClCompile>
+  </ItemDefinitionGroup>
   <PropertyGroup>
     <TargetName>UF_FileFilterTest</TargetName>
     <CommonBinDir>$(SolutionDir)x64\$(Configuration)\bin\</CommonBinDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
       <AdditionalIncludeDirectories>$(SolutionDir)uf_fltwarp\include;$(SolutionDir)UF_FileFilterFactory\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
