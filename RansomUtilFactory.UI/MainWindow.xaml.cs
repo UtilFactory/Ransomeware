@@ -29,8 +29,30 @@ public partial class MainWindow : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         UiLogger.Info("메인 창 로드 시작");
-        NativeMethods.ValidateAbi();
-        uint error = NativeMethods.UfFltInitialize();
+        try
+        {
+            NativeMethods.ValidateAbi();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("통신 DLL ABI 검증 실패", exception);
+            MessageBox.Show(exception.Message, "통신 DLL 초기화",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        uint error;
+        try
+        {
+            error = NativeMethods.UfFltInitialize();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("통신 DLL 초기화 호출 예외", exception);
+            MessageBox.Show(exception.Message, "통신 DLL 초기화",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         if (error != NativeMethods.ErrorSuccess)
         {
             UiLogger.Error($"통신 DLL 초기화 실패 error={error}");
@@ -52,10 +74,22 @@ public partial class MainWindow : Window
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
         UiLogger.Info("사용자가 파일 드라이버 연결을 요청");
-        DriverOperationResult loadResult = DriverInstaller.LoadFileDriver();
+        DriverOperationResult loadResult;
+        try
+        {
+            loadResult = DriverInstaller.LoadFileDriver();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("파일 드라이버 로드 버튼 처리 예외", exception);
+            MessageBox.Show(exception.Message, "파일 드라이버 로드",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         FileDriverStatusText.Text = loadResult.Message;
         if (!loadResult.Success)
         {
+            UiLogger.Error($"파일 드라이버 로드 실패 message={loadResult.Message}");
             ShowDriverOperationResult("파일 드라이버 로드", loadResult);
             return;
         }
@@ -76,17 +110,28 @@ public partial class MainWindow : Window
                 "파일 드라이버 설치", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
             MessageBoxResult.Yes)
         {
+            UiLogger.Info("파일 드라이버 설치 취소");
             return;
         }
 
         DisconnectDriver();
-        DriverOperationResult result = DriverInstaller.InstallFileDriver();
+        DriverOperationResult result;
+        try
+        {
+            result = DriverInstaller.InstallFileDriver();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("파일 드라이버 설치 버튼 처리 예외", exception);
+            MessageBox.Show(exception.Message, "파일 드라이버 설치",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         UiLogger.Info($"파일 드라이버 설치 결과 success={result.Success} message={result.Message}");
         FileDriverStatusText.Text = result.Message;
         if (!result.Success)
         {
-            MessageBox.Show(result.Message, "파일 드라이버 설치",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowDriverOperationResult("파일 드라이버 설치", result);
             return;
         }
         ConnectDriver(showFailure: true);
@@ -101,15 +146,31 @@ public partial class MainWindow : Window
                 "파일 드라이버 제거", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
             MessageBoxResult.Yes)
         {
+            UiLogger.Info("파일 드라이버 제거 취소");
             return;
         }
 
         if (_connected)
         {
-            _ = NativeMethods.UfFltClearPolicy();
+            uint clearError = NativeMethods.UfFltClearPolicy();
+            if (clearError != NativeMethods.ErrorSuccess)
+            {
+                UiLogger.Warn($"파일 드라이버 제거 전 정책 초기화 실패 error={clearError}");
+            }
         }
         DisconnectDriver();
-        DriverOperationResult result = DriverInstaller.UninstallFileDriver();
+        DriverOperationResult result;
+        try
+        {
+            result = DriverInstaller.UninstallFileDriver();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("파일 드라이버 제거 버튼 처리 예외", exception);
+            MessageBox.Show(exception.Message, "파일 드라이버 제거",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         UiLogger.Info($"파일 드라이버 제거 결과 success={result.Success} message={result.Message}");
         FileDriverStatusText.Text = result.Message;
         ShowDriverOperationResult("파일 드라이버 제거", result);
@@ -117,6 +178,14 @@ public partial class MainWindow : Window
 
     private static void ShowDriverOperationResult(string title, DriverOperationResult result)
     {
+        if (result.Success)
+        {
+            UiLogger.Info($"{title} 성공 message={result.Message}");
+        }
+        else
+        {
+            UiLogger.Error($"{title} 실패 message={result.Message}");
+        }
         string message = result.RebootRequired
             ? $"{result.Message}\n작업을 완료하려면 Windows를 다시 시작해야 합니다."
             : result.Message;
@@ -184,48 +253,77 @@ public partial class MainWindow : Window
 
     private void AddMonitorFolder_Click(object sender, RoutedEventArgs e)
     {
-        AddFolder(MonitorFolders);
+        UiLogger.Info("감시 폴더 추가 버튼 클릭");
+        AddFolder(MonitorFolders, "감시 폴더");
     }
 
     private void AddProtectFolder_Click(object sender, RoutedEventArgs e)
     {
-        OpenFolderDialog dialog = new()
+        UiLogger.Info("보호 폴더 추가 버튼 클릭");
+        try
         {
-            Title = "보호 폴더 선택",
-            Multiselect = false
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
+            OpenFolderDialog dialog = new()
+            {
+                Title = "보호 폴더 선택",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                UiLogger.Info("보호 폴더 선택 취소");
+                return;
+            }
 
-        string path = NormalizeFolderPath(dialog.FolderName);
-        if (ProtectFolders.Any(item => string.Equals(item.Path, path,
-                StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
+            string path = NormalizeFolderPath(dialog.FolderName);
+            if (ProtectFolders.Any(item => string.Equals(item.Path, path,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                UiLogger.Warn($"보호 폴더 중복 추가 거부 path={path}");
+                return;
+            }
 
-        ProtectedFolderEntry entry = new(path);
-        ProtectFolders.Add(entry);
-        ProtectFolderList.SelectedItem = entry;
+            ProtectedFolderEntry entry = new(path);
+            ProtectFolders.Add(entry);
+            ProtectFolderList.SelectedItem = entry;
+            UiLogger.Info($"보호 폴더 추가 완료 path={path}");
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("보호 폴더 추가 실패", exception);
+            MessageBox.Show(exception.Message, "보호 폴더 추가",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
-    private static void AddFolder(ObservableCollection<string> target)
+    private void AddFolder(ObservableCollection<string> target, string folderType)
     {
-        OpenFolderDialog dialog = new()
+        try
         {
-            Title = "폴더 선택",
-            Multiselect = false
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-        string path = NormalizeFolderPath(dialog.FolderName);
-        if (!target.Contains(path, StringComparer.OrdinalIgnoreCase))
-        {
+            OpenFolderDialog dialog = new()
+            {
+                Title = "폴더 선택",
+                Multiselect = false
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                UiLogger.Info($"{folderType} 선택 취소");
+                return;
+            }
+
+            string path = NormalizeFolderPath(dialog.FolderName);
+            if (target.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                UiLogger.Warn($"{folderType} 중복 추가 거부 path={path}");
+                return;
+            }
+
             target.Add(path);
+            UiLogger.Info($"{folderType} 추가 완료 path={path}");
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error($"{folderType} 추가 실패", exception);
+            MessageBox.Show(exception.Message, folderType,
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -243,7 +341,10 @@ public partial class MainWindow : Window
         if (MonitorFolderList.SelectedItem is string selected)
         {
             MonitorFolders.Remove(selected);
+            UiLogger.Info($"감시 폴더 제거 완료 path={selected}");
+            return;
         }
+        UiLogger.Warn("감시 폴더 제거 실패: 선택된 폴더 없음");
     }
 
     private void RemoveProtectFolder_Click(object sender, RoutedEventArgs e)
@@ -252,7 +353,10 @@ public partial class MainWindow : Window
         {
             ProtectFolders.Remove(selected);
             AllowedProcessList.ItemsSource = null;
+            UiLogger.Info($"보호 폴더 제거 완료 path={selected.Path}");
+            return;
         }
+        UiLogger.Warn("보호 폴더 제거 실패: 선택된 폴더 없음");
     }
 
     private void ProtectFolderList_SelectionChanged(object sender,
@@ -264,29 +368,45 @@ public partial class MainWindow : Window
 
     private void AddAllowedProcess_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("허용 프로그램 추가 버튼 클릭");
         if (ProtectFolderList.SelectedItem is not ProtectedFolderEntry folder)
         {
+            UiLogger.Warn("허용 프로그램 추가 실패: 보호 폴더가 선택되지 않음");
             MessageBox.Show("먼저 보호 폴더를 선택하십시오.", "허용 프로그램",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        OpenFileDialog dialog = new()
+        try
         {
-            Title = "허용할 실행 파일 선택",
-            Filter = "실행 파일 (*.exe)|*.exe|모든 파일 (*.*)|*.*",
-            Multiselect = false,
-            CheckFileExists = true
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
+            OpenFileDialog dialog = new()
+            {
+                Title = "허용할 실행 파일 선택",
+                Filter = "실행 파일 (*.exe)|*.exe|모든 파일 (*.*)|*.*",
+                Multiselect = false,
+                CheckFileExists = true
+            };
+            if (dialog.ShowDialog() != true)
+            {
+                UiLogger.Info("허용 프로그램 선택 취소");
+                return;
+            }
 
-        string path = Path.GetFullPath(dialog.FileName);
-        if (!folder.AllowedProcesses.Contains(path, StringComparer.OrdinalIgnoreCase))
-        {
+            string path = Path.GetFullPath(dialog.FileName);
+            if (folder.AllowedProcesses.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                UiLogger.Warn($"허용 프로그램 중복 추가 거부 path={path}");
+                return;
+            }
+
             folder.AllowedProcesses.Add(path);
+            UiLogger.Info($"허용 프로그램 추가 완료 folder={folder.Path} path={path}");
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("허용 프로그램 추가 실패", exception);
+            MessageBox.Show(exception.Message, "허용 프로그램",
+                MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -296,7 +416,10 @@ public partial class MainWindow : Window
             AllowedProcessList.SelectedItem is string selected)
         {
             folder.AllowedProcesses.Remove(selected);
+            UiLogger.Info($"허용 프로그램 제거 완료 folder={folder.Path} path={selected}");
+            return;
         }
+        UiLogger.Warn("허용 프로그램 제거 실패: 보호 폴더 또는 프로그램이 선택되지 않음");
     }
 
     private void ApplyPolicy_Click(object sender, RoutedEventArgs e)
@@ -304,12 +427,14 @@ public partial class MainWindow : Window
         UiLogger.Info("사용자가 정책 적용을 요청");
         if (!_connected)
         {
+            UiLogger.Warn("정책 적용 실패: 드라이버에 연결되지 않음");
             MessageBox.Show("먼저 드라이버에 연결하십시오.", "정책 적용",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         if (MonitorFolders.Count + ProtectFolders.Count > 64)
         {
+            UiLogger.Warn($"정책 적용 실패: 폴더 개수 초과 monitor={MonitorFolders.Count} protected={ProtectFolders.Count}");
             MessageBox.Show("감시 폴더와 보호 폴더는 합계 64개까지 설정할 수 있습니다.",
                 "정책 적용", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -319,12 +444,25 @@ public partial class MainWindow : Window
             monitored.Contains(folder.Path));
         if (duplicate is not null)
         {
+            UiLogger.Warn($"정책 적용 실패: 감시·보호 폴더 중복 path={duplicate.Path}");
             MessageBox.Show($"같은 폴더를 감시와 보호에 동시에 설정할 수 없습니다.\n{duplicate.Path}",
                 "정책 적용", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        uint error = ReplacePolicyV2(out string? validationMessage);
+        uint error;
+        string? validationMessage;
+        try
+        {
+            error = ReplacePolicyV2(out validationMessage);
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("정책 적용 버튼 처리 예외", exception);
+            MessageBox.Show(exception.Message, "정책 적용",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         if (error != NativeMethods.ErrorSuccess)
         {
             UiLogger.Error($"정책 적용 실패 error={error} validation={validationMessage}");
@@ -495,11 +633,23 @@ public partial class MainWindow : Window
         UiLogger.Info("사용자가 정책 초기화를 요청");
         if (!_connected)
         {
+            UiLogger.Warn("정책 초기화 실패: 드라이버에 연결되지 않음");
             MessageBox.Show("먼저 드라이버에 연결하십시오.", "정책 초기화",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        uint error = NativeMethods.UfFltClearPolicy();
+        uint error;
+        try
+        {
+            error = NativeMethods.UfFltClearPolicy();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("정책 초기화 버튼 처리 예외", exception);
+            MessageBox.Show(exception.Message, "정책 초기화",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
         if (error != NativeMethods.ErrorSuccess)
         {
             ShowNativeError("정책 초기화", error);
@@ -589,6 +739,10 @@ public partial class MainWindow : Window
         string message = messageResult == NativeMethods.ErrorSuccess
             ? new string(buffer).TrimEnd('\0')
             : "오류 메시지를 확인할 수 없습니다.";
+        if (messageResult != NativeMethods.ErrorSuccess)
+        {
+            UiLogger.Warn($"네이티브 오류 메시지 조회 실패 operation={operation} error={error} messageError={messageResult}");
+        }
         MessageBox.Show($"{operation} 실패\n오류 코드: {error}\n{message}",
             "RansomUtilFactory", MessageBoxButton.OK, MessageBoxImage.Error);
     }

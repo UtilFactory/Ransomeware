@@ -102,8 +102,10 @@ internal static class DriverInstaller
 
     internal static DriverOperationResult UninstallFileDriver()
     {
+        UiLogger.Info("파일 드라이버 제거 작업 시작");
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
+            UiLogger.Error($"드라이버 언로드 권한 활성화 실패 error={privilegeError}");
             return new(false, $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
         }
         int unloadResult = FilterUnload(FileDriverServiceName);
@@ -111,24 +113,30 @@ internal static class DriverInstaller
         UiLogger.Info($"FilterUnload 결과 hresult={unloadResult} error={unloadError}");
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
         {
+            UiLogger.Error($"미니필터 언로드 실패 error={unloadError}");
             return new(false, $"미니필터 언로드 실패: {FormatError(unloadError)}", false);
         }
 
         string? infPath = FindFileDriverInf();
         if (infPath is null)
         {
+            UiLogger.Error("드라이버 제거 실패: INF를 찾지 못함");
             return new(false,
                 "파일 드라이버 설치 패키지를 찾을 수 없어 제거를 계속할 수 없습니다.", false);
         }
+        UiLogger.Info($"드라이버 INF 제거 시작 path={infPath}");
         if (!DiUninstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
             if (error == ErrorNotFound)
             {
+                UiLogger.Warn("드라이버 INF 제거 대상이 이미 없음");
                 return new(true, "설치된 파일 드라이버가 없습니다.", false);
             }
+            UiLogger.Error($"DiUninstallDriverW 실패 error={error}");
             return new(false, $"드라이버 패키지 제거 실패: {FormatError(error)}", rebootRequired);
         }
+        UiLogger.Info($"파일 드라이버 제거 완료 rebootRequired={rebootRequired}");
         return new(true, "파일 드라이버를 언로드하고 제거했습니다.", rebootRequired);
     }
 
