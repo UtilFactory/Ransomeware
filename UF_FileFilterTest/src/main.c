@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../uf_fltwarp/include/uf_fltwarp.h"
+#include "../../uf_fltwarp/include/uf_log.h"
 
 #ifndef _countof
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
@@ -17,6 +18,7 @@ PrintError(const wchar_t* Operation, unsigned long Error)
     } else {
         fwprintf(stderr, L"%ls 실패: %lu\n", Operation, Error);
     }
+    UfLogWriteFormat(UfLogError, "시험 프로그램 작업 실패 error=%lu", Error);
 }
 
 static void
@@ -84,6 +86,7 @@ int wmain(int argc, wchar_t** argv)
     int exitCode = 0;
 
     UfFltInitialize();
+    UfLogWriteFormat(UfLogInfo, "UF_FileFilterTest 시작 argc=%d", argc);
     if (argc < 2) {
         PrintUsage();
         return 2;
@@ -269,6 +272,7 @@ int wmain(int argc, wchar_t** argv)
         exitCode = 2;
     }
 
+    UfLogWriteFormat(UfLogInfo, "UF_FileFilterTest 종료 exit=%d", exitCode);
     UfFltShutdown();
     return exitCode;
 }

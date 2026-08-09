@@ -28,24 +28,30 @@ public partial class MainWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("메인 창 로드 시작");
         NativeMethods.ValidateAbi();
         uint error = NativeMethods.UfFltInitialize();
         if (error != NativeMethods.ErrorSuccess)
         {
+            UiLogger.Error($"통신 DLL 초기화 실패 error={error}");
             ShowNativeError("통신 DLL 초기화", error);
             return;
         }
         ConnectDriver(showFailure: false);
+        UiLogger.Info("메인 창 로드 완료");
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
+        UiLogger.Info("메인 창 종료 시작");
         DisconnectDriver();
         NativeMethods.UfFltShutdown();
+        UiLogger.Info("메인 창 종료 완료");
     }
 
     private void Connect_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 파일 드라이버 연결을 요청");
         DriverOperationResult loadResult = DriverInstaller.LoadFileDriver();
         FileDriverStatusText.Text = loadResult.Message;
         if (!loadResult.Success)
@@ -58,11 +64,13 @@ public partial class MainWindow : Window
 
     private void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 파일 드라이버 연결 해제를 요청");
         DisconnectDriver();
     }
 
     private void InstallFileDriver_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 파일 드라이버 설치를 요청");
         if (MessageBox.Show(
                 "파일 드라이버를 설치하고 로드하시겠습니까?\n시험용 VM에서만 실행하십시오.",
                 "파일 드라이버 설치", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
@@ -73,6 +81,7 @@ public partial class MainWindow : Window
 
         DisconnectDriver();
         DriverOperationResult result = DriverInstaller.InstallFileDriver();
+        UiLogger.Info($"파일 드라이버 설치 결과 success={result.Success} message={result.Message}");
         FileDriverStatusText.Text = result.Message;
         if (!result.Success)
         {
@@ -86,6 +95,7 @@ public partial class MainWindow : Window
 
     private void UninstallFileDriver_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 파일 드라이버 제거를 요청");
         if (MessageBox.Show(
                 "적용된 정책을 초기화하고 파일 드라이버를 제거하시겠습니까?",
                 "파일 드라이버 제거", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
@@ -100,6 +110,7 @@ public partial class MainWindow : Window
         }
         DisconnectDriver();
         DriverOperationResult result = DriverInstaller.UninstallFileDriver();
+        UiLogger.Info($"파일 드라이버 제거 결과 success={result.Success} message={result.Message}");
         FileDriverStatusText.Text = result.Message;
         ShowDriverOperationResult("파일 드라이버 제거", result);
     }
@@ -122,6 +133,7 @@ public partial class MainWindow : Window
         uint error = NativeMethods.UfFltConnect();
         if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
         {
+            UiLogger.Warn($"드라이버 통신 연결 실패 error={error}");
             SetConnectionState(false);
             if (showFailure)
             {
@@ -144,6 +156,7 @@ public partial class MainWindow : Window
         }
         _receiverStarted = true;
         SetConnectionState(true);
+        UiLogger.Info("드라이버 통신 연결 및 이벤트 수신 시작 완료");
     }
 
     private void DisconnectDriver()
@@ -159,6 +172,7 @@ public partial class MainWindow : Window
             _connected = false;
         }
         SetConnectionState(false);
+        UiLogger.Info("드라이버 통신 연결 해제 완료");
     }
 
     private void SetConnectionState(bool connected)
@@ -287,6 +301,7 @@ public partial class MainWindow : Window
 
     private void ApplyPolicy_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 정책 적용을 요청");
         if (!_connected)
         {
             MessageBox.Show("먼저 드라이버에 연결하십시오.", "정책 적용",
@@ -312,6 +327,7 @@ public partial class MainWindow : Window
         uint error = ReplacePolicyV2(out string? validationMessage);
         if (error != NativeMethods.ErrorSuccess)
         {
+            UiLogger.Error($"정책 적용 실패 error={error} validation={validationMessage}");
             if (!string.IsNullOrWhiteSpace(validationMessage))
             {
                 MessageBox.Show(validationMessage, "정책 적용",
@@ -322,6 +338,7 @@ public partial class MainWindow : Window
             return;
         }
         PolicyStatusText.Text = $"정책 적용됨: 감시 {MonitorFolders.Count}개, 보호 {ProtectFolders.Count}개";
+        UiLogger.Info($"정책 적용 성공 monitor={MonitorFolders.Count} protected={ProtectFolders.Count}");
     }
 
     private uint ReplacePolicyV2(out string? validationMessage)
@@ -475,6 +492,7 @@ public partial class MainWindow : Window
 
     private void ClearPolicy_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("사용자가 정책 초기화를 요청");
         if (!_connected)
         {
             MessageBox.Show("먼저 드라이버에 연결하십시오.", "정책 초기화",
@@ -488,10 +506,12 @@ public partial class MainWindow : Window
             return;
         }
         PolicyStatusText.Text = "드라이버 정책을 초기화했습니다.";
+        UiLogger.Info("정책 초기화 성공");
     }
 
     private void ClearLog_Click(object sender, RoutedEventArgs e)
     {
+        UiLogger.Info("UI 이벤트 로그 목록 초기화");
         EventLogs.Clear();
     }
 
@@ -521,6 +541,7 @@ public partial class MainWindow : Window
 
         if (fileEvent.Action == 3)
         {
+            UiLogger.Info($"프로세스 신뢰 요청 pid={fileEvent.ProcessId} rule={fileEvent.ProcessRuleId}");
             _ = Task.Run(() => ResolveProcessTrust(fileEvent));
         }
     }
@@ -551,7 +572,8 @@ public partial class MainWindow : Window
                 Temporary = 0,
                 SignerIdentity = identityBuffer
             };
-            _ = NativeMethods.UfFltSetProcessTrust(ref trust);
+            uint trustResult = NativeMethods.UfFltSetProcessTrust(ref trust);
+            UiLogger.Info($"프로세스 신뢰 응답 pid={fileEvent.ProcessId} rule={fileEvent.ProcessRuleId} decision={decision} signerError={signerError} result={trustResult}");
         }
         finally
         {
@@ -561,6 +583,7 @@ public partial class MainWindow : Window
 
     private void ShowNativeError(string operation, uint error)
     {
+        UiLogger.Error($"네이티브 작업 실패 operation={operation} error={error}");
         char[] buffer = new char[512];
         uint messageResult = NativeMethods.UfFltGetErrorMessage(error, buffer, (uint)buffer.Length);
         string message = messageResult == NativeMethods.ErrorSuccess

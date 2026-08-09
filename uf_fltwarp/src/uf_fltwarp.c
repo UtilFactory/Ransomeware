@@ -6,6 +6,7 @@
 #include <wintrust.h>
 #include <softpub.h>
 #include "../include/uf_fltwarp.h"
+#include "../include/uf_log.h"
 
 #ifndef _countof
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
@@ -167,13 +168,17 @@ UfReceiverMain(void* Parameter)
 unsigned long __stdcall
 UfFltInitialize(void)
 {
+    UfLogInitialize();
+    UfLogWrite(UfLogInfo, "uf_fltwarp 초기화");
     return ERROR_SUCCESS;
 }
 
 void __stdcall
 UfFltShutdown(void)
 {
+    UfLogWrite(UfLogInfo, "uf_fltwarp 종료 시작");
     UfFltDisconnect();
+    UfLogShutdown();
 }
 
 unsigned long __stdcall
@@ -185,16 +190,20 @@ UfFltConnect(void)
     AcquireSRWLockExclusive(&gLock);
     if (gPort != INVALID_HANDLE_VALUE) {
         ReleaseSRWLockExclusive(&gLock);
+        UfLogWrite(UfLogDebug, "통신 포트가 이미 연결됨");
         return ERROR_ALREADY_EXISTS;
     }
     result = FilterConnectCommunicationPort(
         UF_FILTER_PORT_NAME, 0, NULL, 0, NULL, &port);
     if (FAILED(result)) {
         ReleaseSRWLockExclusive(&gLock);
-        return UfResultFromHresult(result);
+        result = (HRESULT)UfResultFromHresult(result);
+        UfLogWriteFormat(UfLogError, "통신 포트 연결 실패 error=%lu", (unsigned long)result);
+        return (unsigned long)result;
     }
     gPort = port;
     ReleaseSRWLockExclusive(&gLock);
+    UfLogWrite(UfLogInfo, "통신 포트 연결 성공");
     return ERROR_SUCCESS;
 }
 
@@ -210,6 +219,7 @@ UfFltDisconnect(void)
     ReleaseSRWLockExclusive(&gLock);
     if (port != INVALID_HANDLE_VALUE) {
         CloseHandle(port);
+        UfLogWrite(UfLogInfo, "통신 포트 연결 해제");
     }
 }
 
@@ -282,14 +292,19 @@ UfSendRequest(
     HRESULT sendResult;
     HANDLE port;
     DWORD bytesReturned = 0;
+    const UF_MESSAGE_HEADER* header = (const UF_MESSAGE_HEADER*)Request;
 
     if (Request == NULL || RequestSize < sizeof(UF_MESSAGE_HEADER)) {
+        UfLogWrite(UfLogError, "잘못된 통신 요청 인수");
         return ERROR_INVALID_PARAMETER;
     }
+    UfLogWriteFormat(UfLogDebug, "통신 요청 command=%lu size=%lu",
+        header->Command, RequestSize);
     AcquireSRWLockShared(&gLock);
     port = gPort;
     if (port == INVALID_HANDLE_VALUE) {
         ReleaseSRWLockShared(&gLock);
+        UfLogWrite(UfLogWarn, "통신 요청 실패: 연결되지 않음");
         return ERROR_INVALID_HANDLE;
     }
     sendResult = FilterSendMessage(
@@ -299,7 +314,13 @@ UfSendRequest(
     if (ReplySizeReturned != NULL) {
         *ReplySizeReturned = bytesReturned;
     }
-    return UfResultFromHresult(sendResult);
+    if (FAILED(sendResult)) {
+        unsigned long error = UfResultFromHresult(sendResult);
+        UfLogWriteFormat(UfLogError, "통신 요청 실패 command=%lu error=%lu",
+            header->Command, error);
+        return error;
+    }
+    return ERROR_SUCCESS;
 }
 
 static int
@@ -391,8 +412,14 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
         (Policy->SignerRuleCount != 0 && Policy->Signers == NULL) ||
         Policy->RevocationTimeoutMilliseconds > 60000 ||
         Policy->RevocationTimeoutAction > UfRevocationTimeoutAllowLocalTrust) {
+        UfLogWrite(UfLogError, "V2 정책 입력 검증 실패");
         return ERROR_INVALID_PARAMETER;
     }
+
+    UfLogWriteFormat(UfLogInfo,
+        "V2 정책 적용 시작 paths=%lu protected=%lu signers=%lu",
+        Policy->PathRuleCount, Policy->ProtectedProcessRuleCount,
+        Policy->SignerRuleCount);
 
     request = (UF_REPLACE_POLICY_V2*)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*request));
@@ -493,6 +520,8 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
 Exit:
     SecureZeroMemory(request, sizeof(*request));
     HeapFree(GetProcessHeap(), 0, request);
+    UfLogWriteFormat(result == ERROR_SUCCESS ? UfLogInfo : UfLogError,
+        "V2 정책 적용 종료 error=%lu", result);
     return result;
 }
 
@@ -620,7 +649,10 @@ UfFltClearPolicy(void)
     result = FilterSendMessage(
         port, &request, sizeof(request), NULL, 0, &bytesReturned);
     ReleaseSRWLockShared(&gLock);
-    return UfResultFromHresult(result);
+    result = (HRESULT)UfResultFromHresult(result);
+    UfLogWriteFormat((unsigned long)result == ERROR_SUCCESS ? UfLogInfo : UfLogError,
+        "정책 초기화 종료 error=%lu", (unsigned long)result);
+    return (unsigned long)result;
 }
 
 unsigned long __stdcall
@@ -692,15 +724,18 @@ UfStartEventReceiverInternal(
     HANDLE stopEvent;
 
     if (Callback == NULL && CallbackV2 == NULL) {
+        UfLogWrite(UfLogError, "이벤트 수신 콜백이 없음");
         return ERROR_INVALID_PARAMETER;
     }
     AcquireSRWLockExclusive(&gLock);
     if (gPort == INVALID_HANDLE_VALUE) {
         ReleaseSRWLockExclusive(&gLock);
+        UfLogWrite(UfLogWarn, "이벤트 수신 시작 실패: 연결되지 않음");
         return ERROR_INVALID_HANDLE;
     }
     if (gReceiverThread != NULL) {
         ReleaseSRWLockExclusive(&gLock);
+        UfLogWrite(UfLogDebug, "이벤트 수신기가 이미 실행 중");
         return ERROR_ALREADY_EXISTS;
     }
     stopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -726,6 +761,7 @@ UfStartEventReceiverInternal(
     }
     gReceiverThread = thread;
     ReleaseSRWLockExclusive(&gLock);
+    UfLogWrite(UfLogInfo, "이벤트 수신 시작");
     return ERROR_SUCCESS;
 }
 
@@ -770,6 +806,7 @@ UfFltSetProcessTrust(const UF_FLT_PROCESS_TRUST_INPUT* Trust)
         Trust->Decision < UfTrustAllow || Trust->Decision > UfTrustInvalidate ||
         Trust->SignerIdentity == NULL ||
         Trust->SignerIdentity->SerialLengthBytes > UF_CERT_SERIAL_BYTES) {
+        UfLogWrite(UfLogError, "프로세스 신뢰 입력 검증 실패");
         return ERROR_INVALID_PARAMETER;
     }
     ZeroMemory(&update, sizeof(update));
@@ -794,6 +831,9 @@ UfFltSetProcessTrust(const UF_FLT_PROCESS_TRUST_INPUT* Trust)
         sizeof(update.SerialNumber));
     update.SerialLengthBytes = Trust->SignerIdentity->SerialLengthBytes;
     result = UfSendRequest(&update, sizeof(update), NULL, 0, NULL);
+    UfLogWriteFormat(result == ERROR_SUCCESS ? UfLogInfo : UfLogError,
+        "프로세스 신뢰 전달 pid=%lu rule=%lu decision=%u error=%lu",
+        Trust->ProcessId, Trust->ProcessRuleId, Trust->Decision, result);
     SecureZeroMemory(&update, sizeof(update));
     return result;
 }
@@ -837,6 +877,7 @@ UfFltStopEventReceiver(void)
     gCallbackV2 = NULL;
     gCallbackContext = NULL;
     ReleaseSRWLockExclusive(&gLock);
+    UfLogWrite(UfLogInfo, "이벤트 수신 중지");
 }
 
 static unsigned long
@@ -1035,6 +1076,7 @@ UfFltGetImageSignerIdentityWithTimeout(
     unsigned long result;
 
     if (ImagePath == NULL || Identity == NULL || ImagePath[0] == L'\0') {
+        UfLogWrite(UfLogError, "서명자 조회 입력 검증 실패");
         return ERROR_INVALID_PARAMETER;
     }
     ZeroMemory(Identity, sizeof(*Identity));
@@ -1050,6 +1092,7 @@ UfFltGetImageSignerIdentityWithTimeout(
     result = UfGetSignerCertificate(
         ImagePath, &certificateStore, &cryptographicMessage, &certificate);
     if (result != ERROR_SUCCESS) {
+        UfLogWriteFormat(UfLogError, "서명자 인증서 추출 실패 error=%lu", result);
         if (cryptographicMessage != NULL) {
             CryptMsgClose(cryptographicMessage);
         }
@@ -1098,6 +1141,7 @@ Exit:
         CertCloseStore(certificateStore, 0);
     }
     if (result != ERROR_SUCCESS) {
+        UfLogWriteFormat(UfLogError, "서명자 식별 정보 생성 실패 error=%lu", result);
         return result;
     }
     if (result == ERROR_TIMEOUT) {
@@ -1106,6 +1150,7 @@ Exit:
     if (trustStatus != ERROR_SUCCESS && OnlineRevocation) {
         return UfTrustStatusToError(trustStatus);
     }
+    UfLogWriteFormat(UfLogInfo, "서명자 식별 정보 조회 완료 trusted=%lu", Identity->Trusted);
     return ERROR_SUCCESS;
 }
 

@@ -10,6 +10,8 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "UF_FileFilterTest", "UF_Fil
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RansomUtilFactory.UI", "RansomUtilFactory.UI\RansomUtilFactory.UI.csproj", "{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "log4cpp", "third_party\log4cpp\log4cpp.vcxproj", "{C8C3F97D-7D3D-4C9F-9C14-6F605B2C1A35}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -32,5 +34,9 @@ Global
 		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Debug|x64.Build.0 = Debug|x64
 		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Release|x64.ActiveCfg = Release|x64
 		{9E89C7FC-4F71-4BFB-9C38-26BB27B53D77}.Release|x64.Build.0 = Release|x64
+		{C8C3F97D-7D3D-4C9F-9C14-6F605B2C1A35}.Debug|x64.ActiveCfg = Debug|x64
+		{C8C3F97D-7D3D-4C9F-9C14-6F605B2C1A35}.Debug|x64.Build.0 = Debug|x64
+		{C8C3F97D-7D3D-4C9F-9C14-6F605B2C1A35}.Release|x64.ActiveCfg = Release|x64
+		{C8C3F97D-7D3D-4C9F-9C14-6F605B2C1A35}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 EndGlobal

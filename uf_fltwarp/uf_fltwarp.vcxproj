@@ -30,17 +30,26 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
       <PreprocessorDefinitions>UF_FLTWARP_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_FileFilterFactory\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_FileFilterFactory\include;$(SolutionDir)third_party\log4cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
-    <Link><AdditionalDependencies>FltLib.lib;Wintrust.lib;Crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link><AdditionalDependencies>FltLib.lib;Wintrust.lib;Crypt32.lib;Advapi32.lib;User32.lib;Ws2_32.lib;$(SolutionDir)x64\$(Configuration)\log4cpp_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
     <PostBuildEvent>
       <Command>if not exist "$(CommonBinDir)" mkdir "$(CommonBinDir)"
 copy /Y "$(TargetPath)" "$(CommonBinDir)"
 if exist "$(CommonBinDir)$(TargetName).pdb" del /Q "$(CommonBinDir)$(TargetName).pdb"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
-  <ItemGroup><ClCompile Include="src\uf_fltwarp.c" /></ItemGroup>
-  <ItemGroup><ClInclude Include="include\uf_fltwarp.h" /></ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\uf_fltwarp.c" />
+    <ClCompile Include="src\uf_log.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\uf_fltwarp.h" />
+    <ClInclude Include="include\uf_log.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\third_party\log4cpp\log4cpp.vcxproj" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -44,22 +44,27 @@ internal static class DriverInstaller
         string? infPath = FindFileDriverInf();
         if (infPath is null)
         {
+            UiLogger.Error("드라이버 INF를 찾지 못함");
             return new(false,
                 "파일 드라이버 설치 패키지를 찾을 수 없습니다. 전체 솔루션을 Debug | x64로 다시 빌드하십시오.",
                 false);
         }
+        UiLogger.Info($"드라이버 INF 설치 시작 path={infPath}");
         if (!DiInstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
+            UiLogger.Error($"DiInstallDriverW 실패 error={error}");
             return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired);
         }
 
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
+            UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
             return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", rebootRequired);
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
+        UiLogger.Info($"FilterLoad 결과 hresult={result} error={loadError}");
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -75,10 +80,12 @@ internal static class DriverInstaller
     {
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
+            UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
             return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
+        UiLogger.Info($"설치된 미니필터 FilterLoad 결과 hresult={result} error={loadError}");
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -101,6 +108,7 @@ internal static class DriverInstaller
         }
         int unloadResult = FilterUnload(FileDriverServiceName);
         int unloadError = HResultToWin32(unloadResult);
+        UiLogger.Info($"FilterUnload 결과 hresult={unloadResult} error={unloadError}");
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
         {
             return new(false, $"미니필터 언로드 실패: {FormatError(unloadError)}", false);
