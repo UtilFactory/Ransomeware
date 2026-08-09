@@ -597,6 +597,11 @@ public partial class MainWindow : Window
                         validationMessage = $"실행 파일 경로가 너무 깁니다.\n{imagePath}";
                         return 206;
                     }
+                    if (allowedProcess.Access == 0)
+                    {
+                        validationMessage = $"허용 프로세스의 읽기 또는 쓰기 권한을 하나 이상 선택하십시오.\n{imagePath}";
+                        return 87;
+                    }
 
                     uint signerRuleId = 0;
                     ushort processFlags = 0;
@@ -628,7 +633,7 @@ public partial class MainWindow : Window
                     {
                         RuleId = nextProcessRuleId++, FolderRuleId = folderRuleId,
                         SignerRuleId = signerRuleId, Reserved16 = processFlags,
-                        Access = NativeMethods.PfAccessAll,
+                        Access = allowedProcess.Access,
                         ImageLengthChars = (uint)imagePath.Length, Image = imagePath
                     });
                 }
@@ -800,7 +805,7 @@ public partial class MainWindow : Window
                 ProcessCreateTime = fileEvent.ProcessCreateTime,
                 ProcessId = fileEvent.ProcessId,
                 ProcessRuleId = fileEvent.ProcessRuleId,
-                Access = NativeMethods.PfAccessAll,
+                Access = fileEvent.RequestedAccess,
                 Decision = decision,
                 Temporary = 0,
                 SignerIdentity = identityBuffer
@@ -858,6 +863,24 @@ public sealed class AllowedProcessEntry
     }
 
     public string Path { get; }
+
+    public ushort Access { get; private set; } = NativeMethods.PfAccessAll;
+
+    public bool AllowRead
+    {
+        get => (Access & NativeMethods.PfAccessRead) != 0;
+        set => Access = value
+            ? (ushort)(Access | NativeMethods.PfAccessRead)
+            : (ushort)(Access & ~NativeMethods.PfAccessRead);
+    }
+
+    public bool AllowWrite
+    {
+        get => (Access & NativeMethods.PfAccessWrite) != 0;
+        set => Access = value
+            ? (ushort)(Access | NativeMethods.PfAccessWrite)
+            : (ushort)(Access & ~NativeMethods.PfAccessWrite);
+    }
 
     public bool RequireCodeSignature { get; set; } = true;
 }
