@@ -29,8 +29,8 @@ internal static class NativeMethods
             Marshal.SizeOf<FileEvent>() != 1592 ||
             Marshal.SizeOf<FileEventV2>() != 1632 ||
             Marshal.SizeOf<PathInputV2>() != 16 ||
-            Marshal.SizeOf<ProtectedProcessRule>() != 540 ||
-            Marshal.SizeOf<SignerRule>() != 112 ||
+            Marshal.SizeOf<ProtectedProcessInput>() != 24 ||
+            Marshal.SizeOf<SignerInput>() != 40 ||
             Marshal.SizeOf<PolicyInputV2>() != 88 ||
             Marshal.SizeOf<SignerIdentity>() != 632)
         {
@@ -64,36 +64,28 @@ internal static class NativeMethods
         internal IntPtr DosPath;
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    internal struct ProtectedProcessRule
+    // DLL 공개 입력 ABI는 문자열을 호출자가 보유한 포인터로 전달합니다.
+    // 드라이버 내부의 고정 배열 구조체와 혼동하지 않도록 별도 형식으로 선언합니다.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ProtectedProcessInput
     {
         internal uint RuleId;
         internal uint FolderRuleId;
         internal uint SignerRuleId;
         internal ushort Access;
         internal ushort Reserved16;
-        internal uint ImageLengthChars;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        internal string Image;
+        internal IntPtr DosImagePath;
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    internal struct SignerRule
+    internal struct SignerInput
     {
         internal uint RuleId;
         internal uint MatchType;
-        internal uint SerialLengthBytes;
-        internal uint Reserved;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32, ArraySubType = UnmanagedType.U1)]
-        internal byte[] ThumbprintSha256;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32, ArraySubType = UnmanagedType.U1)]
-        internal byte[] IssuerSha256;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32, ArraySubType = UnmanagedType.U1)]
-        internal byte[] SerialNumber;
+        internal IntPtr ThumbprintSha256Hex;
+        internal IntPtr IssuerSha256Hex;
+        internal IntPtr SerialNumberHex;
+        internal IntPtr DisplayCompany;
     }
 
     [StructLayout(LayoutKind.Sequential)]

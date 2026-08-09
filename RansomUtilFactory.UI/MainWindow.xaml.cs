@@ -614,8 +614,8 @@ public partial class MainWindow : Window
             }
             pathRules = pathRules.OrderByDescending(rule => rule.Path.Length).ToList();
 
-            List<NativeMethods.ProtectedProcessRule> processRules = [];
-            List<NativeMethods.SignerRule> signerRules = [];
+            List<NativeMethods.ProtectedProcessInput> processRules = [];
+            List<NativeMethods.SignerInput> signerRules = [];
             Dictionary<string, uint> folderIds = pathRules
                 .Where(rule => rule.Mode == NativeMethods.UfRuleProtected)
                 .ToDictionary(rule => rule.Path, rule => rule.RuleId,
@@ -658,23 +658,36 @@ public partial class MainWindow : Window
 
                         signerRuleId = nextSignerRuleId++;
                         processFlags = NativeMethods.UfProcessRuleFlagRequireCodeSignature;
-                        signerRules.Add(new NativeMethods.SignerRule
+                        IntPtr thumbprintHex = Marshal.StringToHGlobalUni(
+                            Convert.ToHexString(identity.ThumbprintSha256));
+                        IntPtr issuerHex = Marshal.StringToHGlobalUni(
+                            Convert.ToHexString(identity.IssuerSha256));
+                        IntPtr serialHex = Marshal.StringToHGlobalUni(
+                            Convert.ToHexString(
+                                identity.SerialNumber, 0,
+                                (int)identity.SerialLengthBytes));
+                        strings.Add(thumbprintHex);
+                        strings.Add(issuerHex);
+                        strings.Add(serialHex);
+                        signerRules.Add(new NativeMethods.SignerInput
                         {
                             RuleId = signerRuleId,
                             MatchType = NativeMethods.UfSignerMatchThumbprintSha256,
-                            SerialLengthBytes = identity.SerialLengthBytes,
-                            ThumbprintSha256 = identity.ThumbprintSha256,
-                            IssuerSha256 = identity.IssuerSha256,
-                            SerialNumber = identity.SerialNumber
+                            ThumbprintSha256Hex = thumbprintHex,
+                            IssuerSha256Hex = issuerHex,
+                            SerialNumberHex = serialHex,
+                            DisplayCompany = IntPtr.Zero
                         });
                     }
 
-                    processRules.Add(new NativeMethods.ProtectedProcessRule
+                    IntPtr imagePathPointer = Marshal.StringToHGlobalUni(imagePath);
+                    strings.Add(imagePathPointer);
+                    processRules.Add(new NativeMethods.ProtectedProcessInput
                     {
                         RuleId = nextProcessRuleId++, FolderRuleId = folderRuleId,
                         SignerRuleId = signerRuleId, Reserved16 = processFlags,
                         Access = allowedProcess.Access,
-                        ImageLengthChars = (uint)imagePath.Length, Image = imagePath
+                        DosImagePath = imagePathPointer
                     });
                 }
             }
@@ -697,7 +710,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            int processSize = Marshal.SizeOf<NativeMethods.ProtectedProcessRule>();
+            int processSize = Marshal.SizeOf<NativeMethods.ProtectedProcessInput>();
             if (processRules.Count > 0)
             {
                 processBuffer = Marshal.AllocHGlobal(processSize * processRules.Count);
@@ -708,7 +721,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            int signerSize = Marshal.SizeOf<NativeMethods.SignerRule>();
+            int signerSize = Marshal.SizeOf<NativeMethods.SignerInput>();
             if (signerRules.Count > 0)
             {
                 signerBuffer = Marshal.AllocHGlobal(signerSize * signerRules.Count);
