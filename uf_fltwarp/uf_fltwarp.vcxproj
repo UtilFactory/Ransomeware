@@ -29,7 +29,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_FileFilterFactory\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
-    <Link><AdditionalDependencies>FltLib.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link><AdditionalDependencies>FltLib.lib;Wintrust.lib;Crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
     <PostBuildEvent>
       <Command>if not exist "$(CommonBinDir)" mkdir "$(CommonBinDir)"
 copy /Y "$(TargetPath)" "$(CommonBinDir)"

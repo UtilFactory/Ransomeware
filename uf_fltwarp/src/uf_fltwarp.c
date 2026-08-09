@@ -2,6 +2,9 @@
 #include <windows.h>
 #include <fltuser.h>
 #include <limits.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#include <softpub.h>
 #include "../include/uf_fltwarp.h"
 
 #ifndef _countof
@@ -10,7 +13,7 @@
 
 typedef struct _UF_USER_EVENT_MESSAGE {
     FILTER_MESSAGE_HEADER Header;
-    UF_FILE_EVENT Event;
+    UF_FILE_EVENT_V2 Event;
 } UF_USER_EVENT_MESSAGE;
 
 static SRWLOCK gLock = SRWLOCK_INIT;
@@ -18,7 +21,13 @@ static HANDLE gPort = INVALID_HANDLE_VALUE;
 static HANDLE gStopEvent = NULL;
 static HANDLE gReceiverThread = NULL;
 static UF_FLT_EVENT_CALLBACK gCallback = NULL;
+static UF_FLT_EVENT_CALLBACK_V2 gCallbackV2 = NULL;
 static void* gCallbackContext = NULL;
+
+static unsigned long UfStartEventReceiverInternal(
+    UF_FLT_EVENT_CALLBACK Callback,
+    UF_FLT_EVENT_CALLBACK_V2 CallbackV2,
+    void* Context);
 
 static unsigned long
 UfResultFromHresult(HRESULT Result)
@@ -123,15 +132,31 @@ UfReceiverMain(void* Parameter)
         }
 
         if (message.Event.Version != UF_PROTOCOL_VERSION ||
-            message.Event.Size != sizeof(UF_FILE_EVENT)) {
+            message.Event.Size != sizeof(UF_FILE_EVENT_V2)) {
             continue;
         }
         AcquireSRWLockShared(&gLock);
         callback = gCallback;
+        UF_FLT_EVENT_CALLBACK_V2 callbackV2 = gCallbackV2;
         callbackContext = gCallbackContext;
         ReleaseSRWLockShared(&gLock);
         if (callback != NULL) {
-            callback(&message.Event, callbackContext);
+            UF_FILE_EVENT legacyEvent;
+            ZeroMemory(&legacyEvent, sizeof(legacyEvent));
+            legacyEvent.Version = UF_LEGACY_PUBLIC_VERSION;
+            legacyEvent.Size = sizeof(legacyEvent);
+            legacyEvent.ProcessId = message.Event.ProcessId;
+            legacyEvent.DesiredAccess = message.Event.DesiredAccess;
+            legacyEvent.Disposition = message.Event.Disposition;
+            legacyEvent.Action = message.Event.Action;
+            legacyEvent.PathLengthChars = message.Event.PathLengthChars;
+            legacyEvent.ImageLengthChars = message.Event.ImageLengthChars;
+            CopyMemory(legacyEvent.Path, message.Event.Path, sizeof(legacyEvent.Path));
+            CopyMemory(legacyEvent.Image, message.Event.Image, sizeof(legacyEvent.Image));
+            callback(&legacyEvent, callbackContext);
+        }
+        if (callbackV2 != NULL) {
+            callbackV2(&message.Event, callbackContext);
         }
     }
 
@@ -246,16 +271,258 @@ UfFltDosPathToNtPath(
     return ERROR_SUCCESS;
 }
 
+static unsigned long
+UfSendRequest(
+    const void* Request,
+    unsigned long RequestSize,
+    void* Reply,
+    unsigned long ReplySize,
+    unsigned long* ReplySizeReturned)
+{
+    HRESULT sendResult;
+    HANDLE port;
+    DWORD bytesReturned = 0;
+
+    if (Request == NULL || RequestSize < sizeof(UF_MESSAGE_HEADER)) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    AcquireSRWLockShared(&gLock);
+    port = gPort;
+    if (port == INVALID_HANDLE_VALUE) {
+        ReleaseSRWLockShared(&gLock);
+        return ERROR_INVALID_HANDLE;
+    }
+    sendResult = FilterSendMessage(
+        port, (LPVOID)Request, RequestSize,
+        Reply, ReplySize, &bytesReturned);
+    ReleaseSRWLockShared(&gLock);
+    if (ReplySizeReturned != NULL) {
+        *ReplySizeReturned = bytesReturned;
+    }
+    return UfResultFromHresult(sendResult);
+}
+
+static int
+UfHexValue(wchar_t Character)
+{
+    if (Character >= L'0' && Character <= L'9') {
+        return (int)(Character - L'0');
+    }
+    if (Character >= L'a' && Character <= L'f') {
+        return (int)(Character - L'a') + 10;
+    }
+    if (Character >= L'A' && Character <= L'F') {
+        return (int)(Character - L'A') + 10;
+    }
+    return -1;
+}
+
+static unsigned long
+UfParseHex(
+    const wchar_t* Text,
+    unsigned char* Destination,
+    unsigned long Capacity,
+    unsigned long* LengthBytes)
+{
+    size_t length;
+    size_t index;
+    int high;
+    int low;
+
+    if (Text == NULL || Destination == NULL || LengthBytes == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    length = wcslen(Text);
+    if ((length & 1u) != 0 || length / 2 > Capacity) {
+        return ERROR_INVALID_DATA;
+    }
+    for (index = 0; index < length / 2; ++index) {
+        high = UfHexValue(Text[index * 2]);
+        low = UfHexValue(Text[index * 2 + 1]);
+        if (high < 0 || low < 0) {
+            return ERROR_INVALID_DATA;
+        }
+        Destination[index] = (unsigned char)((high << 4) | low);
+    }
+    *LengthBytes = (unsigned long)(length / 2);
+    return ERROR_SUCCESS;
+}
+
+static unsigned long
+UfFillV2PathRule(
+    const UF_FLT_PATH_INPUT_V2* Input,
+    UF_PATH_RULE_V2* Rule)
+{
+    unsigned long result;
+
+    if (Input == NULL || Rule == NULL || Input->RuleId == 0 ||
+        (Input->Mode != UfRuleMonitor && Input->Mode != UfRuleProtected)) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(Rule, sizeof(*Rule));
+    Rule->RuleId = Input->RuleId;
+    Rule->Mode = Input->Mode;
+    result = UfFltDosPathToNtPath(
+        Input->DosPath, Rule->Path, UF_MAX_PATH_CHARS);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    Rule->PathLengthChars = (unsigned long)wcslen(Rule->Path);
+    return Rule->PathLengthChars == 0 ? ERROR_BAD_PATHNAME : ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
+{
+    UF_REPLACE_POLICY_V2* request;
+    unsigned long index;
+    unsigned long result = ERROR_SUCCESS;
+    unsigned long serialLength;
+    unsigned long long generation;
+
+    if (Policy == NULL ||
+        Policy->PathRuleCount > UF_MAX_RULES ||
+        Policy->MonitorExceptionCount > UF_MAX_RULES ||
+        Policy->ProtectedProcessRuleCount > UF_MAX_PROTECTED_PROCESS_RULES ||
+        Policy->SignerRuleCount > UF_MAX_SIGNER_RULES ||
+        (Policy->PathRuleCount != 0 && Policy->PathRules == NULL) ||
+        (Policy->MonitorExceptionCount != 0 && Policy->MonitorExceptions == NULL) ||
+        (Policy->ProtectedProcessRuleCount != 0 && Policy->ProtectedProcesses == NULL) ||
+        (Policy->SignerRuleCount != 0 && Policy->Signers == NULL) ||
+        Policy->RevocationTimeoutMilliseconds > 60000 ||
+        Policy->RevocationTimeoutAction > UfRevocationTimeoutAllowLocalTrust) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    request = (UF_REPLACE_POLICY_V2*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*request));
+    if (request == NULL) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    generation = Policy->PolicyGeneration != 0
+        ? Policy->PolicyGeneration : GetTickCount64();
+    if (generation == 0) {
+        generation = 1;
+    }
+    request->Header.Version = UF_PROTOCOL_VERSION;
+    request->Header.Size = sizeof(*request);
+    request->Header.Command = UfCommandReplacePolicy;
+    request->PolicyGeneration = generation;
+    request->PathRuleCount = Policy->PathRuleCount;
+    request->MonitorExceptionCount = Policy->MonitorExceptionCount;
+    request->ProtectedProcessRuleCount = Policy->ProtectedProcessRuleCount;
+    request->SignerRuleCount = Policy->SignerRuleCount;
+    request->Revocation.OnlineCheckEnabled = Policy->OnlineRevocationEnabled != 0;
+    request->Revocation.TimeoutMilliseconds = Policy->RevocationTimeoutMilliseconds;
+    request->Revocation.TimeoutAction = Policy->RevocationTimeoutAction;
+    request->Revocation.TerminateOnRevoked = Policy->TerminateOnRevoked != 0;
+
+    for (index = 0; index < Policy->PathRuleCount; ++index) {
+        result = UfFillV2PathRule(
+            &Policy->PathRules[index], &request->PathRules[index]);
+        if (result != ERROR_SUCCESS) {
+            goto Exit;
+        }
+    }
+    for (index = 0; index < Policy->MonitorExceptionCount; ++index) {
+        result = UfFillImageRule(
+            Policy->MonitorExceptions[index], &request->MonitorExceptions[index]);
+        if (result != ERROR_SUCCESS) {
+            goto Exit;
+        }
+    }
+    for (index = 0; index < Policy->SignerRuleCount; ++index) {
+        const UF_FLT_SIGNER_INPUT* input = &Policy->Signers[index];
+        UF_SIGNER_RULE* signer = &request->Signers[index];
+        if (input->RuleId == 0 ||
+            (input->MatchType != UfSignerMatchThumbprintSha256 &&
+             input->MatchType != UfSignerMatchIssuerSha256AndSerial)) {
+            result = ERROR_INVALID_PARAMETER;
+            goto Exit;
+        }
+        signer->RuleId = input->RuleId;
+        signer->MatchType = input->MatchType;
+        if (input->MatchType == UfSignerMatchThumbprintSha256) {
+            result = UfParseHex(
+                input->ThumbprintSha256Hex, signer->ThumbprintSha256,
+                UF_CERT_SHA256_BYTES, &serialLength);
+            if (result != ERROR_SUCCESS || serialLength != UF_CERT_SHA256_BYTES) {
+                result = ERROR_INVALID_DATA;
+                goto Exit;
+            }
+        } else {
+            result = UfParseHex(
+                input->IssuerSha256Hex, signer->IssuerSha256,
+                UF_CERT_SHA256_BYTES, &serialLength);
+            if (result != ERROR_SUCCESS || serialLength != UF_CERT_SHA256_BYTES) {
+                result = ERROR_INVALID_DATA;
+                goto Exit;
+            }
+            result = UfParseHex(
+                input->SerialNumberHex, signer->SerialNumber,
+                UF_CERT_SERIAL_BYTES, &signer->SerialLengthBytes);
+            if (result != ERROR_SUCCESS || signer->SerialLengthBytes == 0) {
+                result = ERROR_INVALID_DATA;
+                goto Exit;
+            }
+        }
+    }
+    for (index = 0; index < Policy->ProtectedProcessRuleCount; ++index) {
+        const UF_FLT_PROTECTED_PROCESS_INPUT* input = &Policy->ProtectedProcesses[index];
+        UF_PROTECTED_PROCESS_RULE* process = &request->ProtectedProcesses[index];
+        if (input->RuleId == 0 || input->FolderRuleId == 0 ||
+            input->SignerRuleId == 0 || input->Access == PF_ACCESS_NONE ||
+            (input->Access & (unsigned short)~PF_ACCESS_ALL) != 0) {
+            result = ERROR_INVALID_PARAMETER;
+            goto Exit;
+        }
+        ZeroMemory(process, sizeof(*process));
+        process->RuleId = input->RuleId;
+        process->FolderRuleId = input->FolderRuleId;
+        process->SignerRuleId = input->SignerRuleId;
+        process->Access = input->Access;
+        result = UfFltDosPathToNtPath(
+            input->DosImagePath, process->Image, UF_MAX_IMAGE_CHARS);
+        if (result != ERROR_SUCCESS) {
+            goto Exit;
+        }
+        process->ImageLengthChars = (unsigned long)wcslen(process->Image);
+    }
+    result = UfSendRequest(request, sizeof(*request), NULL, 0, NULL);
+
+Exit:
+    SecureZeroMemory(request, sizeof(*request));
+    HeapFree(GetProcessHeap(), 0, request);
+    return result;
+}
+
 unsigned long __stdcall
 UfFltReplacePolicy(const UF_FLT_POLICY_INPUT* Policy)
 {
-    UF_REPLACE_POLICY* request;
+    UF_FLT_POLICY_INPUT_V2 compatibilityPolicy;
+    UF_FLT_PATH_INPUT_V2 compatibilityPaths[UF_MAX_RULES];
     unsigned long index;
-    unsigned long result = ERROR_SUCCESS;
-    DWORD bytesReturned;
-    HRESULT sendResult;
-    HANDLE port;
 
+    if (Policy == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (Policy->AllowedImageCount == 0) {
+        ZeroMemory(&compatibilityPolicy, sizeof(compatibilityPolicy));
+        ZeroMemory(compatibilityPaths, sizeof(compatibilityPaths));
+        compatibilityPolicy.PathRuleCount = Policy->PathRuleCount;
+        compatibilityPolicy.MonitorExceptionCount = Policy->MonitorExceptionCount;
+        compatibilityPolicy.PathRules = compatibilityPaths;
+        compatibilityPolicy.MonitorExceptions = Policy->MonitorExceptions;
+        for (index = 0; index < Policy->PathRuleCount; ++index) {
+            compatibilityPaths[index].RuleId = index + 1;
+            compatibilityPaths[index].Mode = Policy->PathRules[index].Mode;
+            compatibilityPaths[index].DosPath = Policy->PathRules[index].DosPath;
+        }
+        return UfFltReplacePolicyV2(&compatibilityPolicy);
+    }
+    return ERROR_REVISION_MISMATCH;
+
+#if 0
     if (Policy == NULL ||
         Policy->PathRuleCount > UF_MAX_RULES ||
         Policy->MonitorExceptionCount > UF_MAX_RULES ||
@@ -328,6 +595,7 @@ Exit:
     SecureZeroMemory(request, sizeof(*request));
     HeapFree(GetProcessHeap(), 0, request);
     return result;
+#endif
 }
 
 unsigned long __stdcall
@@ -358,6 +626,26 @@ UfFltClearPolicy(void)
 unsigned long __stdcall
 UfFltQueryState(UF_STATE_REPLY* State)
 {
+    UF_STATE_REPLY_V2 stateV2;
+    unsigned long result;
+
+    if (State == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    result = UfFltQueryStateV2(&stateV2);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    ZeroMemory(State, sizeof(*State));
+    State->Version = UF_LEGACY_PUBLIC_VERSION;
+    State->Size = sizeof(*State);
+    State->PathRuleCount = stateV2.PathRuleCount;
+    State->MonitorExceptionCount = stateV2.MonitorExceptionCount;
+    State->AllowedImageCount = stateV2.ProtectedProcessRuleCount;
+    State->Connected = stateV2.Connected;
+    return ERROR_SUCCESS;
+
+#if 0
     UF_MESSAGE_HEADER request;
     DWORD bytesReturned = 0;
     HRESULT result;
@@ -391,15 +679,19 @@ UfFltQueryState(UF_STATE_REPLY* State)
         return ERROR_REVISION_MISMATCH;
     }
     return ERROR_SUCCESS;
+#endif
 }
 
-unsigned long __stdcall
-UfFltStartEventReceiver(UF_FLT_EVENT_CALLBACK Callback, void* Context)
+static unsigned long
+UfStartEventReceiverInternal(
+    UF_FLT_EVENT_CALLBACK Callback,
+    UF_FLT_EVENT_CALLBACK_V2 CallbackV2,
+    void* Context)
 {
     HANDLE thread;
     HANDLE stopEvent;
 
-    if (Callback == NULL) {
+    if (Callback == NULL && CallbackV2 == NULL) {
         return ERROR_INVALID_PARAMETER;
     }
     AcquireSRWLockExclusive(&gLock);
@@ -419,6 +711,7 @@ UfFltStartEventReceiver(UF_FLT_EVENT_CALLBACK Callback, void* Context)
     }
     gStopEvent = stopEvent;
     gCallback = Callback;
+    gCallbackV2 = CallbackV2;
     gCallbackContext = Context;
     thread = CreateThread(NULL, 0, UfReceiverMain, NULL, 0, NULL);
     if (thread == NULL) {
@@ -426,6 +719,7 @@ UfFltStartEventReceiver(UF_FLT_EVENT_CALLBACK Callback, void* Context)
         CloseHandle(gStopEvent);
         gStopEvent = NULL;
         gCallback = NULL;
+        gCallbackV2 = NULL;
         gCallbackContext = NULL;
         ReleaseSRWLockExclusive(&gLock);
         return error;
@@ -433,6 +727,87 @@ UfFltStartEventReceiver(UF_FLT_EVENT_CALLBACK Callback, void* Context)
     gReceiverThread = thread;
     ReleaseSRWLockExclusive(&gLock);
     return ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltQueryStateV2(UF_STATE_REPLY_V2* State)
+{
+    UF_MESSAGE_HEADER request;
+    unsigned long bytesReturned = 0;
+    unsigned long result;
+
+    if (State == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(&request, sizeof(request));
+    ZeroMemory(State, sizeof(*State));
+    request.Version = UF_PROTOCOL_VERSION;
+    request.Size = sizeof(request);
+    request.Command = UfCommandQueryState;
+    result = UfSendRequest(
+        &request, sizeof(request), State, sizeof(*State), &bytesReturned);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    if (bytesReturned != sizeof(*State) ||
+        State->Version != UF_PROTOCOL_VERSION ||
+        State->Size != sizeof(*State)) {
+        return ERROR_REVISION_MISMATCH;
+    }
+    return ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltSetProcessTrust(const UF_FLT_PROCESS_TRUST_INPUT* Trust)
+{
+    UF_PROCESS_TRUST_UPDATE update;
+    unsigned long result;
+
+    if (Trust == NULL || Trust->PolicyGeneration == 0 ||
+        Trust->ProcessId == 0 || Trust->ProcessRuleId == 0 ||
+        Trust->ProcessCreateTime == 0 || Trust->Access == PF_ACCESS_NONE ||
+        (Trust->Access & (unsigned short)~PF_ACCESS_ALL) != 0 ||
+        Trust->Decision < UfTrustAllow || Trust->Decision > UfTrustInvalidate ||
+        Trust->SignerIdentity == NULL ||
+        Trust->SignerIdentity->SerialLengthBytes > UF_CERT_SERIAL_BYTES) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(&update, sizeof(update));
+    update.Header.Version = UF_PROTOCOL_VERSION;
+    update.Header.Size = sizeof(update);
+    update.Header.Command = UfCommandSetProcessTrust;
+    update.PolicyGeneration = Trust->PolicyGeneration;
+    update.ProcessCreateTime = Trust->ProcessCreateTime;
+    update.ProcessId = Trust->ProcessId;
+    update.ProcessRuleId = Trust->ProcessRuleId;
+    update.Access = Trust->Access;
+    update.Decision = Trust->Decision;
+    update.Temporary = Trust->Temporary != 0;
+    CopyMemory(update.ImageIdentitySha256,
+        Trust->SignerIdentity->ThumbprintSha256,
+        sizeof(update.ImageIdentitySha256));
+    CopyMemory(update.IssuerIdentitySha256,
+        Trust->SignerIdentity->IssuerSha256,
+        sizeof(update.IssuerIdentitySha256));
+    CopyMemory(update.SerialNumber,
+        Trust->SignerIdentity->SerialNumber,
+        sizeof(update.SerialNumber));
+    update.SerialLengthBytes = Trust->SignerIdentity->SerialLengthBytes;
+    result = UfSendRequest(&update, sizeof(update), NULL, 0, NULL);
+    SecureZeroMemory(&update, sizeof(update));
+    return result;
+}
+
+unsigned long __stdcall
+UfFltStartEventReceiver(UF_FLT_EVENT_CALLBACK Callback, void* Context)
+{
+    return UfStartEventReceiverInternal(Callback, NULL, Context);
+}
+
+unsigned long __stdcall
+UfFltStartEventReceiverV2(UF_FLT_EVENT_CALLBACK_V2 Callback, void* Context)
+{
+    return UfStartEventReceiverInternal(NULL, Callback, Context);
 }
 
 void __stdcall
@@ -459,8 +834,289 @@ UfFltStopEventReceiver(void)
     gReceiverThread = NULL;
     gStopEvent = NULL;
     gCallback = NULL;
+    gCallbackV2 = NULL;
     gCallbackContext = NULL;
     ReleaseSRWLockExclusive(&gLock);
+}
+
+static unsigned long
+UfTrustStatusToError(LONG Status)
+{
+    HRESULT result = (HRESULT)Status;
+    if (Status == ERROR_SUCCESS) {
+        return ERROR_SUCCESS;
+    }
+    if (HRESULT_FACILITY(result) == FACILITY_WIN32) {
+        return HRESULT_CODE(result);
+    }
+    return (unsigned long)result;
+}
+
+static unsigned long
+UfGetSignerCertificate(
+    const wchar_t* ImagePath,
+    HCERTSTORE* CertificateStore,
+    HCRYPTMSG* CryptographicMessage,
+    PCCERT_CONTEXT* Certificate)
+{
+    DWORD encoding = 0;
+    DWORD content = 0;
+    DWORD format = 0;
+    const void* queryContext = NULL;
+    DWORD signerInfoSize = 0;
+    CMSG_SIGNER_INFO* signerInfo = NULL;
+    CERT_INFO findInfo;
+    PCCERT_CONTEXT found = NULL;
+
+    if (!CryptQueryObject(
+            CERT_QUERY_OBJECT_FILE, ImagePath,
+            CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+            CERT_QUERY_FORMAT_FLAG_BINARY, 0,
+            &encoding, &content, &format, CertificateStore,
+            CryptographicMessage, &queryContext)) {
+        return GetLastError();
+    }
+    if (!CryptMsgGetParam(
+            *CryptographicMessage, CMSG_SIGNER_INFO_PARAM, 0,
+            NULL, &signerInfoSize)) {
+        return GetLastError();
+    }
+    signerInfo = (CMSG_SIGNER_INFO*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, signerInfoSize);
+    if (signerInfo == NULL) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    if (!CryptMsgGetParam(
+            *CryptographicMessage, CMSG_SIGNER_INFO_PARAM, 0,
+            signerInfo, &signerInfoSize)) {
+        HeapFree(GetProcessHeap(), 0, signerInfo);
+        return GetLastError();
+    }
+    ZeroMemory(&findInfo, sizeof(findInfo));
+    findInfo.Issuer = signerInfo->Issuer;
+    findInfo.SerialNumber = signerInfo->SerialNumber;
+    found = CertFindCertificateInStore(
+        *CertificateStore,
+        X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+        0, CERT_FIND_SUBJECT_CERT, &findInfo, NULL);
+    HeapFree(GetProcessHeap(), 0, signerInfo);
+    if (found == NULL) {
+        return GetLastError();
+    }
+    *Certificate = found;
+    return ERROR_SUCCESS;
+}
+
+static unsigned long
+UfHashIssuer(
+    PCCERT_CONTEXT Certificate,
+    unsigned char* Hash,
+    DWORD HashBytes)
+{
+    DWORD bytes = HashBytes;
+    if (!CryptHashCertificate(
+            X509_ASN_ENCODING, CALG_SHA_256, 0,
+            Certificate->pCertInfo->Issuer.pbData,
+            Certificate->pCertInfo->Issuer.cbData,
+            Hash, &bytes)) {
+        return GetLastError();
+    }
+    return bytes == UF_CERT_SHA256_BYTES ? ERROR_SUCCESS : ERROR_INVALID_DATA;
+}
+
+static LONG
+UfVerifyTrustNow(const wchar_t* ImagePath, int OnlineRevocation)
+{
+    WINTRUST_FILE_INFO fileInfo;
+    WINTRUST_DATA trustData;
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+
+    ZeroMemory(&fileInfo, sizeof(fileInfo));
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = ImagePath;
+    ZeroMemory(&trustData, sizeof(trustData));
+    trustData.cbStruct = sizeof(trustData);
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = OnlineRevocation
+        ? WTD_REVOKE_WHOLECHAIN : WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwProvFlags = OnlineRevocation ? 0 : WTD_CACHE_ONLY_URL_RETRIEVAL;
+    return WinVerifyTrust(NULL, &action, &trustData);
+}
+
+typedef struct _UF_TRUST_VERIFY_CONTEXT {
+    HANDLE CompletionEvent;
+    LONG Status;
+    wchar_t ImagePath[UF_MAX_PATH_CHARS];
+} UF_TRUST_VERIFY_CONTEXT;
+
+static DWORD WINAPI
+UfVerifyTrustThread(void* Parameter)
+{
+    UF_TRUST_VERIFY_CONTEXT* context = (UF_TRUST_VERIFY_CONTEXT*)Parameter;
+    context->Status = UfVerifyTrustNow(context->ImagePath, TRUE);
+    SetEvent(context->CompletionEvent);
+    CloseHandle(context->CompletionEvent);
+    HeapFree(GetProcessHeap(), 0, context);
+    return 0;
+}
+
+static unsigned long
+UfVerifyTrustWithTimeout(
+    const wchar_t* ImagePath,
+    int OnlineRevocation,
+    unsigned long TimeoutMilliseconds,
+    LONG* TrustStatus)
+{
+    UF_TRUST_VERIFY_CONTEXT* context;
+    HANDLE thread;
+    DWORD waitResult;
+    size_t length;
+
+    if (!OnlineRevocation) {
+        *TrustStatus = UfVerifyTrustNow(ImagePath, FALSE);
+        return ERROR_SUCCESS;
+    }
+    if (TimeoutMilliseconds == 0) {
+        TimeoutMilliseconds = 1000;
+    }
+    length = wcslen(ImagePath);
+    if (length >= UF_MAX_PATH_CHARS) {
+        return ERROR_FILENAME_EXCED_RANGE;
+    }
+    context = (UF_TRUST_VERIFY_CONTEXT*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*context));
+    if (context == NULL) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    context->CompletionEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (context->CompletionEvent == NULL) {
+        unsigned long error = GetLastError();
+        HeapFree(GetProcessHeap(), 0, context);
+        return error;
+    }
+    CopyMemory(context->ImagePath, ImagePath, (length + 1) * sizeof(wchar_t));
+    thread = CreateThread(NULL, 0, UfVerifyTrustThread, context, 0, NULL);
+    if (thread == NULL) {
+        unsigned long error = GetLastError();
+        CloseHandle(context->CompletionEvent);
+        HeapFree(GetProcessHeap(), 0, context);
+        return error;
+    }
+    waitResult = WaitForSingleObject(context->CompletionEvent, TimeoutMilliseconds);
+    if (waitResult == WAIT_TIMEOUT) {
+        CloseHandle(thread);
+        return ERROR_TIMEOUT;
+    }
+    if (waitResult != WAIT_OBJECT_0) {
+        CloseHandle(thread);
+        return GetLastError();
+    }
+    *TrustStatus = context->Status;
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    return ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltGetImageSignerIdentityWithTimeout(
+    const wchar_t* ImagePath,
+    int OnlineRevocation,
+    unsigned long TimeoutMilliseconds,
+    UF_FLT_SIGNER_IDENTITY* Identity)
+{
+    LONG trustStatus = ERROR_TIMEOUT;
+    HCERTSTORE certificateStore = NULL;
+    HCRYPTMSG cryptographicMessage = NULL;
+    PCCERT_CONTEXT certificate = NULL;
+    DWORD hashBytes = UF_CERT_SHA256_BYTES;
+    DWORD subjectChars;
+    unsigned long result;
+
+    if (ImagePath == NULL || Identity == NULL || ImagePath[0] == L'\0') {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(Identity, sizeof(*Identity));
+    Identity->Size = sizeof(*Identity);
+
+    result = UfVerifyTrustWithTimeout(
+        ImagePath, OnlineRevocation, TimeoutMilliseconds, &trustStatus);
+    if (result != ERROR_SUCCESS && result != ERROR_TIMEOUT) {
+        return result;
+    }
+    Identity->Trusted = trustStatus == ERROR_SUCCESS;
+
+    result = UfGetSignerCertificate(
+        ImagePath, &certificateStore, &cryptographicMessage, &certificate);
+    if (result != ERROR_SUCCESS) {
+        if (cryptographicMessage != NULL) {
+            CryptMsgClose(cryptographicMessage);
+        }
+        if (certificateStore != NULL) {
+            CertCloseStore(certificateStore, 0);
+        }
+        return result;
+    }
+    if (!CertGetCertificateContextProperty(
+            certificate, CERT_SHA256_HASH_PROP_ID,
+            Identity->ThumbprintSha256, &hashBytes)) {
+        result = GetLastError();
+        goto Exit;
+    }
+    result = UfHashIssuer(
+        certificate, Identity->IssuerSha256, UF_CERT_SHA256_BYTES);
+    if (result != ERROR_SUCCESS) {
+        goto Exit;
+    }
+    if (certificate->pCertInfo->SerialNumber.cbData > UF_CERT_SERIAL_BYTES) {
+        result = ERROR_BUFFER_OVERFLOW;
+        goto Exit;
+    }
+    Identity->SerialLengthBytes = certificate->pCertInfo->SerialNumber.cbData;
+    CopyMemory(
+        Identity->SerialNumber,
+        certificate->pCertInfo->SerialNumber.pbData,
+        Identity->SerialLengthBytes);
+    subjectChars = CertGetNameStringW(
+        certificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, NULL,
+        Identity->Subject, UF_MAX_IMAGE_CHARS);
+    if (subjectChars == 0) {
+        result = GetLastError();
+        goto Exit;
+    }
+    result = ERROR_SUCCESS;
+
+Exit:
+    if (certificate != NULL) {
+        CertFreeCertificateContext(certificate);
+    }
+    if (cryptographicMessage != NULL) {
+        CryptMsgClose(cryptographicMessage);
+    }
+    if (certificateStore != NULL) {
+        CertCloseStore(certificateStore, 0);
+    }
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    if (result == ERROR_TIMEOUT) {
+        return ERROR_TIMEOUT;
+    }
+    if (trustStatus != ERROR_SUCCESS && OnlineRevocation) {
+        return UfTrustStatusToError(trustStatus);
+    }
+    return ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltGetImageSignerIdentity(
+    const wchar_t* ImagePath,
+    int OnlineRevocation,
+    UF_FLT_SIGNER_IDENTITY* Identity)
+{
+    return UfFltGetImageSignerIdentityWithTimeout(
+        ImagePath, OnlineRevocation, 1000, Identity);
 }
 
 unsigned long __stdcall
