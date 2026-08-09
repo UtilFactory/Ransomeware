@@ -57,14 +57,30 @@
                                 <StackPanel DockPanel.Dock="Bottom">
                                     <TextBlock Margin="4,6,4,0"
                                                Foreground="#FF8A3B12" TextWrapping="Wrap"
-                                               Text="허용 프로그램은 유효한 코드 서명이 있어야 보호 폴더에 접근할 수 있습니다." />
+                                               Text="허용 프로그램마다 코드 서명 확인 여부를 설정할 수 있습니다. 확인을 끄면 실행 파일 경로만 확인합니다." />
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                                                 Margin="0,8,0,0">
                                         <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
                                         <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
                                     </StackPanel>
                                     <TextBlock Text="선택 폴더의 허용 프로그램" Margin="4,8,4,2" />
-                                    <ListBox x:Name="AllowedProcessList" Height="60" />
+                                    <ListBox x:Name="AllowedProcessList" Height="86">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Path}" TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center" ToolTip="{Binding Path}" />
+                                                    <CheckBox Grid.Column="1" Content="코드 서명 확인"
+                                                              IsChecked="{Binding RequireCodeSignature, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                              Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                                                 Margin="0,6,0,0">
                                         <Button Content="프로그램 추가" Click="AddAllowedProcess_Click" />

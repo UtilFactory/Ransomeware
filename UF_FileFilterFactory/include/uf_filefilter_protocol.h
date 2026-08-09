@@ -26,6 +26,10 @@ typedef unsigned short PROTECTED_FOLDER_ACCESS;
 #define PF_ACCESS_WRITE  ((unsigned short)0x0002)
 #define PF_ACCESS_ALL    ((unsigned short)0x0003)
 
+// 보호 폴더 허용 프로세스 규칙의 서명 확인 플래그입니다.
+// SignerRuleId가 0이면 경로와 프로세스 이미지 경로만 확인합니다.
+#define UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE ((unsigned short)0x0001)
+
 typedef enum _UF_COMMAND {
     UfCommandInvalid = 0,
     UfCommandReplacePolicy = 1,

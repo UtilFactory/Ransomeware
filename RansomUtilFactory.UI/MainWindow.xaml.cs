@@ -466,13 +466,14 @@ public partial class MainWindow : Window
             }
 
             string path = Path.GetFullPath(dialog.FileName);
-            if (folder.AllowedProcesses.Contains(path, StringComparer.OrdinalIgnoreCase))
+            if (folder.AllowedProcesses.Any(item => string.Equals(item.Path, path,
+                    StringComparison.OrdinalIgnoreCase)))
             {
                 UiLogger.Warn($"허용 프로그램 중복 추가 거부 path={path}");
                 return;
             }
 
-            folder.AllowedProcesses.Add(path);
+            folder.AllowedProcesses.Add(new AllowedProcessEntry(path));
             UiLogger.Info($"허용 프로그램 추가 완료 folder={folder.Path} path={path}");
         }
         catch (Exception exception)
@@ -486,10 +487,10 @@ public partial class MainWindow : Window
     private void RemoveAllowedProcess_Click(object sender, RoutedEventArgs e)
     {
         if (ProtectFolderList.SelectedItem is ProtectedFolderEntry folder &&
-            AllowedProcessList.SelectedItem is string selected)
+            AllowedProcessList.SelectedItem is AllowedProcessEntry selected)
         {
             folder.AllowedProcesses.Remove(selected);
-            UiLogger.Info($"허용 프로그램 제거 완료 folder={folder.Path} path={selected}");
+            UiLogger.Info($"허용 프로그램 제거 완료 folder={folder.Path} path={selected.Path}");
             return;
         }
         UiLogger.Warn("허용 프로그램 제거 실패: 보호 폴더 또는 프로그램이 선택되지 않음");
@@ -588,37 +589,46 @@ public partial class MainWindow : Window
                     validationMessage = $"보호 폴더 규칙을 만들 수 없습니다: {folder.Path}";
                     return 87;
                 }
-                foreach (string imagePath in folder.AllowedProcesses)
+                foreach (AllowedProcessEntry allowedProcess in folder.AllowedProcesses)
                 {
+                    string imagePath = allowedProcess.Path;
                     if (imagePath.Length >= 260)
                     {
                         validationMessage = $"실행 파일 경로가 너무 깁니다.\n{imagePath}";
                         return 206;
                     }
 
+                    uint signerRuleId = 0;
+                    ushort processFlags = 0;
                     NativeMethods.SignerIdentity identity = NativeMethods.CreateSignerIdentity();
-                    uint signerError = NativeMethods.UfFltGetImageSignerIdentityWithTimeout(
-                        imagePath, 0, 1000, ref identity);
-                    if (signerError != NativeMethods.ErrorSuccess || identity.Trusted == 0)
+                    if (allowedProcess.RequireCodeSignature)
                     {
-                        validationMessage = $"허용 프로그램의 유효한 코드 서명을 확인하지 못했습니다.\n{imagePath}\n오류 코드: {signerError}";
-                        return signerError == NativeMethods.ErrorSuccess ? 577u : signerError;
+                        uint signerError = NativeMethods.UfFltGetImageSignerIdentityWithTimeout(
+                            imagePath, 0, 1000, ref identity);
+                        if (signerError != NativeMethods.ErrorSuccess || identity.Trusted == 0)
+                        {
+                            validationMessage = $"허용 프로그램의 유효한 코드 서명을 확인하지 못했습니다.\n{imagePath}\n오류 코드: {signerError}";
+                            return signerError == NativeMethods.ErrorSuccess ? 577u : signerError;
+                        }
+
+                        signerRuleId = nextSignerRuleId++;
+                        processFlags = NativeMethods.UfProcessRuleFlagRequireCodeSignature;
+                        signerRules.Add(new NativeMethods.SignerRule
+                        {
+                            RuleId = signerRuleId,
+                            MatchType = NativeMethods.UfSignerMatchThumbprintSha256,
+                            SerialLengthBytes = identity.SerialLengthBytes,
+                            ThumbprintSha256 = identity.ThumbprintSha256,
+                            IssuerSha256 = identity.IssuerSha256,
+                            SerialNumber = identity.SerialNumber
+                        });
                     }
 
-                    uint signerRuleId = nextSignerRuleId++;
-                    signerRules.Add(new NativeMethods.SignerRule
-                    {
-                        RuleId = signerRuleId,
-                        MatchType = NativeMethods.UfSignerMatchThumbprintSha256,
-                        SerialLengthBytes = identity.SerialLengthBytes,
-                        ThumbprintSha256 = identity.ThumbprintSha256,
-                        IssuerSha256 = identity.IssuerSha256,
-                        SerialNumber = identity.SerialNumber
-                    });
                     processRules.Add(new NativeMethods.ProtectedProcessRule
                     {
                         RuleId = nextProcessRuleId++, FolderRuleId = folderRuleId,
-                        SignerRuleId = signerRuleId, Access = NativeMethods.PfAccessAll,
+                        SignerRuleId = signerRuleId, Reserved16 = processFlags,
+                        Access = NativeMethods.PfAccessAll,
                         ImageLengthChars = (uint)imagePath.Length, Image = imagePath
                     });
                 }
@@ -837,5 +847,17 @@ public sealed class ProtectedFolderEntry
 
     public string Path { get; }
 
-    public ObservableCollection<string> AllowedProcesses { get; } = [];
+    public ObservableCollection<AllowedProcessEntry> AllowedProcesses { get; } = [];
+}
+
+public sealed class AllowedProcessEntry
+{
+    public AllowedProcessEntry(string path)
+    {
+        Path = path;
+    }
+
+    public string Path { get; }
+
+    public bool RequireCodeSignature { get; set; } = true;
 }

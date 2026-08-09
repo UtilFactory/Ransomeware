@@ -77,6 +77,7 @@ PrintUsage(void)
         L"  --monitor <폴더> [예외 실행 파일]\n"
         L"  --protect <폴더> <허용 실행 파일>\n"
         L"  --protect-v2 <폴더> <허용 실행 파일>\n"
+        L"  --protect-v2-no-sign <폴더> <허용 실행 파일>\n"
         L"  --listen <초>\n");
 }
 
@@ -199,7 +200,9 @@ int wmain(int argc, wchar_t** argv)
                 wprintf(L"접근 제한 정책을 설정했습니다.\n");
             }
         }
-    } else if (_wcsicmp(argv[1], L"--protect-v2") == 0 && argc == 4) {
+    } else if ((_wcsicmp(argv[1], L"--protect-v2") == 0 ||
+        _wcsicmp(argv[1], L"--protect-v2-no-sign") == 0) && argc == 4) {
+        int requireSignature = _wcsicmp(argv[1], L"--protect-v2") == 0;
         UF_FLT_SIGNER_IDENTITY identity;
         UF_FLT_PATH_INPUT_V2 pathRule;
         UF_FLT_SIGNER_INPUT signerRule;
@@ -207,29 +210,34 @@ int wmain(int argc, wchar_t** argv)
         UF_FLT_POLICY_INPUT_V2 policy;
         wchar_t thumbprint[UF_CERT_SHA256_BYTES * 2 + 1];
 
-        error = UfFltGetImageSignerIdentity(argv[3], 0, &identity);
-        if (error != ERROR_SUCCESS || identity.Trusted == 0) {
-            if (error == ERROR_SUCCESS) {
-                error = ERROR_INVALID_IMAGE_HASH;
-            }
-            PrintError(L"허용 프로세스 로컬 서명 검증", error);
-            exitCode = 1;
-        } else {
+        ZeroMemory(&identity, sizeof(identity));
+        error = ERROR_SUCCESS;
+        if (requireSignature) {
+            error = UfFltGetImageSignerIdentity(argv[3], 0, &identity);
+        }
+        if (!requireSignature ||
+            (error == ERROR_SUCCESS && identity.Trusted != 0)) {
             ZeroMemory(&pathRule, sizeof(pathRule));
             ZeroMemory(&signerRule, sizeof(signerRule));
             ZeroMemory(&processRule, sizeof(processRule));
             ZeroMemory(&policy, sizeof(policy));
-            HexEncode(identity.ThumbprintSha256, UF_CERT_SHA256_BYTES,
-                thumbprint, _countof(thumbprint));
+            if (requireSignature) {
+                HexEncode(identity.ThumbprintSha256, UF_CERT_SHA256_BYTES,
+                    thumbprint, _countof(thumbprint));
+            }
             pathRule.RuleId = 100;
             pathRule.Mode = UfRuleProtected;
             pathRule.DosPath = argv[2];
-            signerRule.RuleId = 300;
-            signerRule.MatchType = UfSignerMatchThumbprintSha256;
-            signerRule.ThumbprintSha256Hex = thumbprint;
+            if (requireSignature) {
+                signerRule.RuleId = 300;
+                signerRule.MatchType = UfSignerMatchThumbprintSha256;
+                signerRule.ThumbprintSha256Hex = thumbprint;
+            }
             processRule.RuleId = 200;
             processRule.FolderRuleId = pathRule.RuleId;
-            processRule.SignerRuleId = signerRule.RuleId;
+            processRule.SignerRuleId = requireSignature ? signerRule.RuleId : 0;
+            processRule.Reserved = requireSignature
+                ? UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE : 0;
             processRule.Access = PF_ACCESS_ALL;
             processRule.DosImagePath = argv[3];
             policy.PolicyGeneration = GetTickCount64();
@@ -237,8 +245,8 @@ int wmain(int argc, wchar_t** argv)
             policy.PathRules = &pathRule;
             policy.ProtectedProcessRuleCount = 1;
             policy.ProtectedProcesses = &processRule;
-            policy.SignerRuleCount = 1;
-            policy.Signers = &signerRule;
+            policy.SignerRuleCount = requireSignature ? 1 : 0;
+            policy.Signers = requireSignature ? &signerRule : NULL;
             policy.RevocationTimeoutAction = UfRevocationTimeoutDeny;
             if (!ConnectOrReport()) {
                 exitCode = 1;
@@ -251,6 +259,12 @@ int wmain(int argc, wchar_t** argv)
                     wprintf(L"V2 보호 정책을 설정했습니다.\n");
                 }
             }
+        } else {
+            if (error == ERROR_SUCCESS) {
+                error = ERROR_INVALID_IMAGE_HASH;
+            }
+            PrintError(L"허용 프로세스 로컬 서명 검증", error);
+            exitCode = 1;
         }
     } else if (_wcsicmp(argv[1], L"--listen") == 0 && argc == 3) {
         unsigned long seconds = wcstoul(argv[2], NULL, 10);

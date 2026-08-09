@@ -198,14 +198,21 @@ UfValidatePolicyRequest(_In_ const UF_REPLACE_POLICY_V2* Request)
         const UF_PROTECTED_PROCESS_RULE* processRule = &Request->ProtectedProcesses[index];
         BOOLEAN folderFound = FALSE;
         BOOLEAN signerFound = FALSE;
+        BOOLEAN requireCodeSignature;
 
         if (processRule->RuleId == 0 || processRule->FolderRuleId == 0 ||
-            processRule->SignerRuleId == 0 ||
+            (processRule->Reserved16 & (USHORT)~UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 ||
             processRule->Access == PF_ACCESS_NONE ||
             FlagOn(processRule->Access, (USHORT)~PF_ACCESS_ALL) ||
             processRule->ImageLengthChars == 0 ||
             processRule->ImageLengthChars >= UF_MAX_IMAGE_CHARS ||
             processRule->Image[processRule->ImageLengthChars] != L'\0') {
+            return STATUS_INVALID_PARAMETER;
+        }
+        requireCodeSignature = processRule->SignerRuleId != 0 ||
+            FlagOn(processRule->Reserved16, UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE);
+        if (FlagOn(processRule->Reserved16, UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) &&
+            processRule->SignerRuleId == 0) {
             return STATUS_INVALID_PARAMETER;
         }
         for (other = 0; other < Request->PathRuleCount; ++other) {
@@ -215,13 +222,15 @@ UfValidatePolicyRequest(_In_ const UF_REPLACE_POLICY_V2* Request)
                 break;
             }
         }
-        for (other = 0; other < Request->SignerRuleCount; ++other) {
-            if (Request->Signers[other].RuleId == processRule->SignerRuleId) {
-                signerFound = TRUE;
-                break;
+        if (requireCodeSignature) {
+            for (other = 0; other < Request->SignerRuleCount; ++other) {
+                if (Request->Signers[other].RuleId == processRule->SignerRuleId) {
+                    signerFound = TRUE;
+                    break;
+                }
             }
         }
-        if (!folderFound || !signerFound) {
+        if (!folderFound || (requireCodeSignature && !signerFound)) {
             return STATUS_NOT_FOUND;
         }
         for (other = 0; other < index; ++other) {
@@ -266,6 +275,7 @@ UfPolicySetProcessTrust(_In_ const UF_PROCESS_TRUST_UPDATE* Update)
     const UF_PROTECTED_PROCESS_RULE* processRule;
     const UF_SIGNER_RULE* signerRule;
     UF_PROCESS_TRUST_ENTRY* entry;
+    BOOLEAN requireCodeSignature;
 
     if (Update->Decision < UfTrustAllow || Update->Decision > UfTrustInvalidate ||
         Update->Access == PF_ACCESS_NONE ||
@@ -292,16 +302,19 @@ UfPolicySetProcessTrust(_In_ const UF_PROCESS_TRUST_UPDATE* Update)
     processRule = UfFindProcessRuleByIdLocked(Update->ProcessRuleId);
     signerRule = processRule == NULL
         ? NULL : UfFindSignerRuleByIdLocked(processRule->SignerRuleId);
+    requireCodeSignature = processRule != NULL &&
+        (processRule->SignerRuleId != 0 ||
+         FlagOn(processRule->Reserved16, UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE));
     if (Update->PolicyGeneration != gUfPolicy.Generation || processRule == NULL ||
-        signerRule == NULL ||
+        (requireCodeSignature && signerRule == NULL) ||
         !UfEqualImageRule(processImage, processRule->Image, processRule->ImageLengthChars) ||
         !FlagOn(processRule->Access, Update->Access) ||
-        (signerRule->MatchType == UfSignerMatchThumbprintSha256 &&
+        (requireCodeSignature && signerRule->MatchType == UfSignerMatchThumbprintSha256 &&
          RtlCompareMemory(
              signerRule->ThumbprintSha256,
              Update->ImageIdentitySha256,
              UF_CERT_SHA256_BYTES) != UF_CERT_SHA256_BYTES) ||
-        (signerRule->MatchType == UfSignerMatchIssuerSha256AndSerial &&
+        (requireCodeSignature && signerRule->MatchType == UfSignerMatchIssuerSha256AndSerial &&
          (Update->SerialLengthBytes == 0 ||
           RtlCompareMemory(
               signerRule->IssuerSha256,
@@ -437,6 +450,14 @@ UfPolicyEvaluate(
         Evaluation->ProcessRuleId = processRule->RuleId;
         if (!FlagOn(processRule->Access, RequestedAccess)) {
             Evaluation->TrustDecision = UfTrustDeny;
+            goto Exit;
+        }
+
+        // 서명 확인을 선택하지 않은 허용 프로세스는 이미지 경로와 권한만
+        // 일치하면 즉시 허용하며 사용자 모드 신뢰 확인을 요청하지 않습니다.
+        if (processRule->SignerRuleId == 0 &&
+            !FlagOn(processRule->Reserved16, UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE)) {
+            Evaluation->TrustDecision = UfTrustAllow;
             goto Exit;
         }
 

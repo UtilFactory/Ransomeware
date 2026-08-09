@@ -39,6 +39,7 @@ typedef struct _UF_FLT_PROTECTED_PROCESS_INPUT {
     unsigned long FolderRuleId;
     unsigned long SignerRuleId;
     PROTECTED_FOLDER_ACCESS Access;
+    // UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE를 지정하면 서명을 확인합니다.
     unsigned short Reserved;
     const wchar_t* DosImagePath;
 } UF_FLT_PROTECTED_PROCESS_INPUT;

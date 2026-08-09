@@ -501,7 +501,10 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
         const UF_FLT_PROTECTED_PROCESS_INPUT* input = &Policy->ProtectedProcesses[index];
         UF_PROTECTED_PROCESS_RULE* process = &request->ProtectedProcesses[index];
         if (input->RuleId == 0 || input->FolderRuleId == 0 ||
-            input->SignerRuleId == 0 || input->Access == PF_ACCESS_NONE ||
+            (input->Reserved & (unsigned short)~UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 ||
+            ((input->Reserved & UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE) != 0 &&
+                input->SignerRuleId == 0) ||
+            input->Access == PF_ACCESS_NONE ||
             (input->Access & (unsigned short)~PF_ACCESS_ALL) != 0) {
             result = ERROR_INVALID_PARAMETER;
             goto Exit;
@@ -511,6 +514,7 @@ UfFltReplacePolicyV2(const UF_FLT_POLICY_INPUT_V2* Policy)
         process->FolderRuleId = input->FolderRuleId;
         process->SignerRuleId = input->SignerRuleId;
         process->Access = input->Access;
+        process->Reserved16 = input->Reserved;
         result = UfFltDosPathToNtPath(
             input->DosImagePath, process->Image, UF_MAX_IMAGE_CHARS);
         if (result != ERROR_SUCCESS) {
