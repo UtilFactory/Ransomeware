@@ -11,6 +11,11 @@ internal static class DriverInstaller
     private const int ErrorServiceAlreadyRunning = 1056;
     private const int ErrorServiceNotActive = 1062;
     private const int ErrorNotFound = 1168;
+    private const int ErrorNotAllAssigned = 1300;
+    private const uint TokenQuery = 0x0008;
+    private const uint TokenAdjustPrivileges = 0x0020;
+    private const uint PrivilegeEnabled = 0x00000002;
+    private const string LoadDriverPrivilege = "SeLoadDriverPrivilege";
 
     [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -49,6 +54,10 @@ internal static class DriverInstaller
             return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired);
         }
 
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", rebootRequired);
+        }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
         if (result < 0 &&
@@ -64,6 +73,10 @@ internal static class DriverInstaller
 
     internal static DriverOperationResult LoadFileDriver()
     {
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+        }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
         if (result < 0 &&
@@ -82,6 +95,10 @@ internal static class DriverInstaller
 
     internal static DriverOperationResult UninstallFileDriver()
     {
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            return new(false, $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+        }
         int unloadResult = FilterUnload(FileDriverServiceName);
         int unloadError = HResultToWin32(unloadResult);
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
@@ -140,6 +157,98 @@ internal static class DriverInstaller
         }
         return null;
     }
+
+    private static bool TryEnableLoadDriverPrivilege(out int error)
+    {
+        error = 0;
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery | TokenAdjustPrivileges,
+                out IntPtr token))
+        {
+            error = Marshal.GetLastWin32Error();
+            return false;
+        }
+        try
+        {
+            if (!LookupPrivilegeValue(null, LoadDriverPrivilege, out Luid luid))
+            {
+                error = Marshal.GetLastWin32Error();
+                return false;
+            }
+            TokenPrivileges privileges = new()
+            {
+                PrivilegeCount = 1,
+                Privilege = new LuidAndAttributes
+                {
+                    Luid = luid,
+                    Attributes = PrivilegeEnabled
+                }
+            };
+            if (!AdjustTokenPrivileges(token, false, ref privileges, 0,
+                    IntPtr.Zero, IntPtr.Zero))
+            {
+                error = Marshal.GetLastWin32Error();
+                return false;
+            }
+            error = Marshal.GetLastWin32Error();
+            return error == 0;
+        }
+        finally
+        {
+            CloseHandle(token);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Luid
+    {
+        internal uint LowPart;
+        internal int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LuidAndAttributes
+    {
+        internal Luid Luid;
+        internal uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TokenPrivileges
+    {
+        internal uint PrivilegeCount;
+        internal LuidAndAttributes Privilege;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(
+        IntPtr processHandle,
+        uint desiredAccess,
+        out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LookupPrivilegeValue(
+        string? systemName,
+        string name,
+        out Luid luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AdjustTokenPrivileges(
+        IntPtr tokenHandle,
+        [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges,
+        ref TokenPrivileges newState,
+        uint bufferLength,
+        IntPtr previousState,
+        IntPtr returnLength);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     private static int HResultToWin32(int result)
     {
