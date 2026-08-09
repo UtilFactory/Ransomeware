@@ -21,17 +21,23 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        UiLogger.Info("메인 창 생성 시작");
         InitializeComponent();
         DataContext = this;
         _eventCallback = ReceiveFileEvent;
+        UiLogger.Info("메인 창 생성 완료");
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        UiLogger.Info("메인 창 로드 시작");
         try
         {
+            UiLogger.Info("메인 창 로드 시작");
+        try
+        {
+            UiLogger.Info("통신 DLL ABI 검증 시작");
             NativeMethods.ValidateAbi();
+            UiLogger.Info("통신 DLL ABI 검증 완료");
         }
         catch (Exception exception)
         {
@@ -44,7 +50,9 @@ public partial class MainWindow : Window
         uint error;
         try
         {
+            UiLogger.Info("UfFltInitialize 호출 시작");
             error = NativeMethods.UfFltInitialize();
+            UiLogger.Info($"UfFltInitialize 호출 완료 error={error}");
         }
         catch (Exception exception)
         {
@@ -59,8 +67,17 @@ public partial class MainWindow : Window
             ShowNativeError("통신 DLL 초기화", error);
             return;
         }
+        UiLogger.Info("창 로드 시 자동 드라이버 연결 시작");
         ConnectDriver(showFailure: false);
+        UiLogger.Info($"창 로드 시 자동 드라이버 연결 완료 connected={_connected} receiver={_receiverStarted}");
         UiLogger.Info("메인 창 로드 완료");
+    }
+    catch (Exception exception)
+    {
+        UiLogger.Error("메인 창 로드 처리 중 예외", exception);
+        MessageBox.Show(exception.Message, "RansomUtilFactory.UI 시작",
+            MessageBoxButton.OK, MessageBoxImage.Error);
+    }
     }
 
     private void Window_Closing(object? sender, CancelEventArgs e)
@@ -197,9 +214,27 @@ public partial class MainWindow : Window
     {
         if (_connected)
         {
+            UiLogger.Debug("드라이버 연결 요청 무시: 이미 연결됨");
             return;
         }
-        uint error = NativeMethods.UfFltConnect();
+        UiLogger.Info($"드라이버 통신 연결 호출 시작 showFailure={showFailure}");
+        uint error;
+        try
+        {
+            error = NativeMethods.UfFltConnect();
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("UfFltConnect 호출 예외", exception);
+            SetConnectionState(false);
+            if (showFailure)
+            {
+                MessageBox.Show(exception.Message, "드라이버 연결",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
+        UiLogger.Info($"드라이버 통신 연결 호출 완료 error={error}");
         if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
         {
             UiLogger.Warn($"드라이버 통신 연결 실패 error={error}");
@@ -211,7 +246,32 @@ public partial class MainWindow : Window
             return;
         }
         _connected = true;
-        error = NativeMethods.UfFltStartEventReceiverV2(_eventCallback, IntPtr.Zero);
+        UiLogger.Info("이벤트 수신 시작 호출 시작");
+        try
+        {
+            error = NativeMethods.UfFltStartEventReceiverV2(_eventCallback, IntPtr.Zero);
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("UfFltStartEventReceiverV2 호출 예외", exception);
+            try
+            {
+                NativeMethods.UfFltDisconnect();
+            }
+            catch (Exception disconnectException)
+            {
+                UiLogger.Error("이벤트 수신 시작 실패 후 DLL 연결 해제 예외", disconnectException);
+            }
+            _connected = false;
+            SetConnectionState(false);
+            if (showFailure)
+            {
+                MessageBox.Show(exception.Message, "이벤트 수신 시작",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
+        UiLogger.Info($"이벤트 수신 시작 호출 완료 error={error}");
         if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
         {
             NativeMethods.UfFltDisconnect();
@@ -230,18 +290,31 @@ public partial class MainWindow : Window
 
     private void DisconnectDriver()
     {
-        if (_receiverStarted)
+        bool succeeded = true;
+        try
         {
-            NativeMethods.UfFltStopEventReceiver();
-            _receiverStarted = false;
+            if (_receiverStarted)
+            {
+                UiLogger.Info("이벤트 수신 중지 호출 시작");
+                NativeMethods.UfFltStopEventReceiver();
+                _receiverStarted = false;
+                UiLogger.Info("이벤트 수신 중지 호출 완료");
+            }
+            if (_connected)
+            {
+                UiLogger.Info("드라이버 통신 연결 해제 호출 시작");
+                NativeMethods.UfFltDisconnect();
+                _connected = false;
+                UiLogger.Info("드라이버 통신 연결 해제 호출 완료");
+            }
         }
-        if (_connected)
+        catch (Exception exception)
         {
-            NativeMethods.UfFltDisconnect();
-            _connected = false;
+            succeeded = false;
+            UiLogger.Error("드라이버 연결 해제 처리 예외", exception);
         }
         SetConnectionState(false);
-        UiLogger.Info("드라이버 통신 연결 해제 완료");
+        UiLogger.Info($"드라이버 통신 연결 해제 처리 종료 success={succeeded}");
     }
 
     private void SetConnectionState(bool connected)
