@@ -10,7 +10,7 @@ static NTSTATUS UfInstanceSetup(
     _In_ FLT_INSTANCE_SETUP_FLAGS Flags,
     _In_ DEVICE_TYPE VolumeDeviceType,
     _In_ FLT_FILESYSTEM_TYPE VolumeFilesystemType);
-static FLT_PREOP_CALLBACK_STATUS UfPreCreate(
+static FLT_PREOP_CALLBACK_STATUS UfPreOperation(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext);
@@ -30,7 +30,14 @@ static NTSTATUS UfPortMessage(
     _Out_ PULONG ReturnOutputBufferLength);
 
 static const FLT_OPERATION_REGISTRATION gCallbacks[] = {
-    { IRP_MJ_CREATE, 0, UfPreCreate, NULL },
+    { IRP_MJ_CREATE, 0, UfPreOperation, NULL },
+    { IRP_MJ_READ, 0, UfPreOperation, NULL },
+    { IRP_MJ_WRITE, 0, UfPreOperation, NULL },
+    { IRP_MJ_SET_INFORMATION, 0, UfPreOperation, NULL },
+    { IRP_MJ_SET_SECURITY, 0, UfPreOperation, NULL },
+    { IRP_MJ_QUERY_INFORMATION, 0, UfPreOperation, NULL },
+    { IRP_MJ_QUERY_SECURITY, 0, UfPreOperation, NULL },
+    { IRP_MJ_DIRECTORY_CONTROL, 0, UfPreOperation, NULL },
     { IRP_MJ_OPERATION_END }
 };
 
@@ -68,9 +75,14 @@ UfSendEvent(
     _In_ PFLT_CALLBACK_DATA Data,
     _In_ PCUNICODE_STRING FileName,
     _In_ PCUNICODE_STRING ImageName,
-    _In_ UF_EVENT_ACTION Action)
+    _In_ UF_EVENT_ACTION Action,
+    _In_ UF_IO_OPERATION Operation,
+    _In_ ULONG DesiredAccess,
+    _In_ ULONG Disposition,
+    _In_ ULONGLONG ProcessCreateTime,
+    _In_opt_ const UF_POLICY_EVALUATION* Evaluation)
 {
-    UF_FILE_EVENT* eventMessage;
+    UF_FILE_EVENT_V2* eventMessage;
     LARGE_INTEGER timeout;
     PFLT_PORT clientPort;
 
@@ -88,10 +100,8 @@ UfSendEvent(
     eventMessage->Version = UF_PROTOCOL_VERSION;
     eventMessage->Size = sizeof(*eventMessage);
     eventMessage->ProcessId = FltGetRequestorProcessId(Data);
-    eventMessage->DesiredAccess =
-        Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess;
-    eventMessage->Disposition =
-        (Data->Iopb->Parameters.Create.Options >> 24) & 0xff;
+    eventMessage->DesiredAccess = DesiredAccess;
+    eventMessage->Disposition = Disposition;
     eventMessage->Action = Action;
     UfCopyUnicodeToFixed(
         eventMessage->Path, UF_MAX_PATH_CHARS,
@@ -99,6 +109,15 @@ UfSendEvent(
     UfCopyUnicodeToFixed(
         eventMessage->Image, UF_MAX_IMAGE_CHARS,
         &eventMessage->ImageLengthChars, ImageName);
+    eventMessage->Operation = Operation;
+    eventMessage->ProcessCreateTime = ProcessCreateTime;
+    if (Evaluation != NULL) {
+        eventMessage->FolderRuleId = Evaluation->FolderRuleId;
+        eventMessage->ProcessRuleId = Evaluation->ProcessRuleId;
+        eventMessage->RequestedAccess = Evaluation->RequestedAccess;
+        eventMessage->TrustDecision = Evaluation->TrustDecision;
+        eventMessage->PolicyGeneration = Evaluation->PolicyGeneration;
+    }
 
     timeout.QuadPart = -10000LL * 50LL;
     (VOID)FltSendMessage(
@@ -107,8 +126,80 @@ UfSendEvent(
     ExFreePoolWithTag(eventMessage, UF_POOL_TAG);
 }
 
+static USHORT
+UfGetRequestedAccess(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _Out_ PULONG DesiredAccess,
+    _Out_ PULONG Disposition,
+    _Out_ UF_IO_OPERATION* Operation)
+{
+    ACCESS_MASK desired = 0;
+    USHORT access = PF_ACCESS_NONE;
+
+    *DesiredAccess = 0;
+    *Disposition = 0;
+    switch (Data->Iopb->MajorFunction) {
+    case IRP_MJ_CREATE:
+        *Operation = UfIoOperationCreate;
+        if (Data->Iopb->Parameters.Create.SecurityContext != NULL) {
+            desired = Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess;
+        }
+        *DesiredAccess = desired;
+        *Disposition = (Data->Iopb->Parameters.Create.Options >> 24) & 0xff;
+        if (FlagOn(desired,
+                FILE_READ_DATA | FILE_LIST_DIRECTORY | FILE_READ_EA |
+                FILE_READ_ATTRIBUTES | READ_CONTROL)) {
+            access |= PF_ACCESS_READ;
+        }
+        if (FlagOn(desired,
+                FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_ADD_FILE |
+                FILE_ADD_SUBDIRECTORY | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
+                DELETE | WRITE_DAC | WRITE_OWNER) ||
+            *Disposition == FILE_SUPERSEDE ||
+            *Disposition == FILE_CREATE ||
+            *Disposition == FILE_OPEN_IF ||
+            *Disposition == FILE_OVERWRITE ||
+            *Disposition == FILE_OVERWRITE_IF) {
+            access |= PF_ACCESS_WRITE;
+        }
+        break;
+    case IRP_MJ_READ:
+        *Operation = UfIoOperationRead;
+        access = PF_ACCESS_READ;
+        break;
+    case IRP_MJ_WRITE:
+        *Operation = UfIoOperationWrite;
+        access = PF_ACCESS_WRITE;
+        break;
+    case IRP_MJ_SET_INFORMATION:
+        *Operation = UfIoOperationSetInformation;
+        access = PF_ACCESS_WRITE;
+        break;
+    case IRP_MJ_SET_SECURITY:
+        *Operation = UfIoOperationSetSecurity;
+        access = PF_ACCESS_WRITE;
+        break;
+    case IRP_MJ_QUERY_INFORMATION:
+        *Operation = UfIoOperationQueryInformation;
+        access = PF_ACCESS_READ;
+        break;
+    case IRP_MJ_QUERY_SECURITY:
+        *Operation = UfIoOperationQuerySecurity;
+        access = PF_ACCESS_READ;
+        break;
+    case IRP_MJ_DIRECTORY_CONTROL:
+        *Operation = UfIoOperationDirectoryControl;
+        access = PF_ACCESS_READ;
+        break;
+    default:
+        *Operation = UfIoOperationCreate;
+        break;
+    }
+    return access;
+}
+
 static FLT_PREOP_CALLBACK_STATUS
-UfPreCreate(
+UfPreOperation(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext)
@@ -119,14 +210,27 @@ UfPreCreate(
     PUNICODE_STRING processImage = NULL;
     UNICODE_STRING emptyImage = RTL_CONSTANT_STRING(L"");
     PCUNICODE_STRING imageName = &emptyImage;
-    UF_RULE_MODE mode;
+    UF_POLICY_EVALUATION evaluation;
+    UF_IO_OPERATION operation;
+    ULONG desiredAccess;
+    ULONG disposition;
+    ULONG processId;
+    ULONGLONG processCreateTime = 0;
+    USHORT requestedAccess;
 
     UNREFERENCED_PARAMETER(FltObjects);
     *CompletionContext = NULL;
 
     if (Data->RequestorMode == KernelMode ||
-        FlagOn(Data->Iopb->OperationFlags, SL_OPEN_PAGING_FILE) ||
+        (Data->Iopb->MajorFunction == IRP_MJ_CREATE &&
+         FlagOn(Data->Iopb->OperationFlags, SL_OPEN_PAGING_FILE)) ||
         Data->Iopb->TargetFileObject == NULL) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    requestedAccess = UfGetRequestedAccess(
+        Data, &desiredAccess, &disposition, &operation);
+    if (requestedAccess == PF_ACCESS_NONE) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
@@ -147,20 +251,44 @@ UfPreCreate(
     if (process != NULL &&
         NT_SUCCESS(SeLocateProcessImageName(process, &processImage))) {
         imageName = processImage;
+        processCreateTime = (ULONGLONG)PsGetProcessCreateTimeQuadPart(process);
     }
+    processId = FltGetRequestorProcessId(Data);
 
-    if (UfPolicyEvaluate(&nameInfo->Name, imageName, &mode)) {
-        if (mode == UfRuleAllowList) {
+    UfPolicyEvaluate(
+        &nameInfo->Name, imageName, processId, processCreateTime,
+        requestedAccess, &evaluation);
+    if (evaluation.Matched) {
+        if (evaluation.MonitorOnly) {
+            UfSendEvent(
+                Data, &nameInfo->Name, imageName, UfEventObserved,
+                operation, desiredAccess, disposition, processCreateTime,
+                &evaluation);
+        } else if (evaluation.TrustDecision != UfTrustAllow) {
+            if (evaluation.NeedsTrustValidation && evaluation.ShouldNotifyTrust) {
+                UfSendEvent(
+                    Data, &nameInfo->Name, imageName, UfEventTrustRequired,
+                    operation, desiredAccess, disposition, processCreateTime,
+                    &evaluation);
+            } else {
+                UfSendEvent(
+                    Data, &nameInfo->Name, imageName, UfEventDenied,
+                    operation, desiredAccess, disposition, processCreateTime,
+                    &evaluation);
+            }
             Data->IoStatus.Status = STATUS_ACCESS_DENIED;
             Data->IoStatus.Information = 0;
-            UfSendEvent(Data, &nameInfo->Name, imageName, UfEventDenied);
             if (processImage != NULL) {
                 ExFreePool(processImage);
             }
             FltReleaseFileNameInformation(nameInfo);
             return FLT_PREOP_COMPLETE;
+        } else {
+            UfSendEvent(
+                Data, &nameInfo->Name, imageName, UfEventObserved,
+                operation, desiredAccess, disposition, processCreateTime,
+                &evaluation);
         }
-        UfSendEvent(Data, &nameInfo->Name, imageName, UfEventObserved);
     }
 
     if (processImage != NULL) {
@@ -240,22 +368,28 @@ UfPortMessage(
 
     switch ((UF_COMMAND)header->Command) {
     case UfCommandReplacePolicy:
-        if (header->Size != sizeof(UF_REPLACE_POLICY)) {
+        if (header->Size != sizeof(UF_REPLACE_POLICY_V2)) {
             return STATUS_INFO_LENGTH_MISMATCH;
         }
-        return UfPolicyReplace((const UF_REPLACE_POLICY*)InputBuffer);
+        return UfPolicyReplace((const UF_REPLACE_POLICY_V2*)InputBuffer);
 
     case UfCommandClearPolicy:
         UfPolicyClear();
         return STATUS_SUCCESS;
 
     case UfCommandQueryState:
-        if (OutputBuffer == NULL || OutputBufferLength < sizeof(UF_STATE_REPLY)) {
+        if (OutputBuffer == NULL || OutputBufferLength < sizeof(UF_STATE_REPLY_V2)) {
             return STATUS_BUFFER_TOO_SMALL;
         }
-        UfPolicyQuery((UF_STATE_REPLY*)OutputBuffer);
-        *ReturnOutputBufferLength = sizeof(UF_STATE_REPLY);
+        UfPolicyQuery((UF_STATE_REPLY_V2*)OutputBuffer);
+        *ReturnOutputBufferLength = sizeof(UF_STATE_REPLY_V2);
         return STATUS_SUCCESS;
+
+    case UfCommandSetProcessTrust:
+        if (header->Size != sizeof(UF_PROCESS_TRUST_UPDATE)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        return UfPolicySetProcessTrust((const UF_PROCESS_TRUST_UPDATE*)InputBuffer);
 
     default:
         return STATUS_INVALID_DEVICE_REQUEST;

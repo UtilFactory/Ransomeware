@@ -19,6 +19,12 @@
     <ProjectReference Include="..\UF_FileFilterFactory\UF_FileFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="log4net" Version="3.3.2" />
+    <None Update="log4net.config" CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="Always" />
+  </ItemGroup>
+
   <Target Name="CopyNativeLibrary" AfterTargets="Build">
     <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll"
           DestinationFolder="$(OutDir)"
@@ -41,6 +47,8 @@
       <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.dll" />
       <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.deps.json" />
       <WpfBuildResult Include="$(TargetDir)RansomUtilFactory.UI.runtimeconfig.json" />
+      <WpfBuildResult Include="$(TargetDir)log4net.dll" />
+      <WpfBuildResult Include="$(TargetDir)log4net.config" />
     </ItemGroup>
     <MakeDir Directories="$(CommonBinDir)" />
     <Delete Files="$(CommonBinDir)RansomUtilFactory.UI.pdb" />

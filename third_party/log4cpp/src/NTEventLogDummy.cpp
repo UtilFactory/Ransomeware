@@ -1,0 +1,1 @@
+// Empty source file to satisfy CMake requirement for the shared library target

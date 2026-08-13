@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../uf_fltwarp/include/uf_fltwarp.h"
+#include "../../uf_fltwarp/include/uf_log.h"
 
 #ifndef _countof
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
@@ -17,6 +18,26 @@ PrintError(const wchar_t* Operation, unsigned long Error)
     } else {
         fwprintf(stderr, L"%ls 실패: %lu\n", Operation, Error);
     }
+    UfLogWriteFormat(UfLogError, "시험 프로그램 작업 실패 error=%lu", Error);
+}
+
+static void
+HexEncode(
+    const unsigned char* Bytes,
+    unsigned long ByteCount,
+    wchar_t* Text,
+    unsigned long TextChars)
+{
+    static const wchar_t digits[] = L"0123456789ABCDEF";
+    unsigned long index;
+    if (TextChars < ByteCount * 2 + 1) {
+        return;
+    }
+    for (index = 0; index < ByteCount; ++index) {
+        Text[index * 2] = digits[(Bytes[index] >> 4) & 0x0f];
+        Text[index * 2 + 1] = digits[Bytes[index] & 0x0f];
+    }
+    Text[ByteCount * 2] = L'\0';
 }
 
 static void __stdcall
@@ -52,8 +73,11 @@ PrintUsage(void)
         L"  --convert <DOS 경로>\n"
         L"  --state\n"
         L"  --clear\n"
+        L"  --signer <실행 파일>\n"
         L"  --monitor <폴더> [예외 실행 파일]\n"
         L"  --protect <폴더> <허용 실행 파일>\n"
+        L"  --protect-v2 <폴더> <허용 실행 파일>\n"
+        L"  --protect-v2-no-sign <폴더> <허용 실행 파일>\n"
         L"  --listen <초>\n");
 }
 
@@ -63,6 +87,7 @@ int wmain(int argc, wchar_t** argv)
     int exitCode = 0;
 
     UfFltInitialize();
+    UfLogWriteFormat(UfLogInfo, "UF_FileFilterTest 시작 argc=%d", argc);
     if (argc < 2) {
         PrintUsage();
         return 2;
@@ -115,6 +140,17 @@ int wmain(int argc, wchar_t** argv)
                 wprintf(L"정책을 초기화했습니다.\n");
             }
         }
+    } else if (_wcsicmp(argv[1], L"--signer") == 0 && argc == 3) {
+        UF_FLT_SIGNER_IDENTITY identity;
+        error = UfFltGetImageSignerIdentity(argv[2], 0, &identity);
+        if (error != ERROR_SUCCESS) {
+            PrintError(L"로컬 서명 검증", error);
+            exitCode = 1;
+        } else {
+            wprintf(
+                L"서명 신뢰=%lu 주체=%ls 일련번호 바이트=%lu\n",
+                identity.Trusted, identity.Subject, identity.SerialLengthBytes);
+        }
     } else if (_wcsicmp(argv[1], L"--monitor") == 0 &&
         (argc == 3 || argc == 4)) {
         UF_FLT_PATH_INPUT pathRule;
@@ -164,6 +200,72 @@ int wmain(int argc, wchar_t** argv)
                 wprintf(L"접근 제한 정책을 설정했습니다.\n");
             }
         }
+    } else if ((_wcsicmp(argv[1], L"--protect-v2") == 0 ||
+        _wcsicmp(argv[1], L"--protect-v2-no-sign") == 0) && argc == 4) {
+        int requireSignature = _wcsicmp(argv[1], L"--protect-v2") == 0;
+        UF_FLT_SIGNER_IDENTITY identity;
+        UF_FLT_PATH_INPUT_V2 pathRule;
+        UF_FLT_SIGNER_INPUT signerRule;
+        UF_FLT_PROTECTED_PROCESS_INPUT processRule;
+        UF_FLT_POLICY_INPUT_V2 policy;
+        wchar_t thumbprint[UF_CERT_SHA256_BYTES * 2 + 1];
+
+        ZeroMemory(&identity, sizeof(identity));
+        error = ERROR_SUCCESS;
+        if (requireSignature) {
+            error = UfFltGetImageSignerIdentity(argv[3], 0, &identity);
+        }
+        if (!requireSignature ||
+            (error == ERROR_SUCCESS && identity.Trusted != 0)) {
+            ZeroMemory(&pathRule, sizeof(pathRule));
+            ZeroMemory(&signerRule, sizeof(signerRule));
+            ZeroMemory(&processRule, sizeof(processRule));
+            ZeroMemory(&policy, sizeof(policy));
+            if (requireSignature) {
+                HexEncode(identity.ThumbprintSha256, UF_CERT_SHA256_BYTES,
+                    thumbprint, _countof(thumbprint));
+            }
+            pathRule.RuleId = 100;
+            pathRule.Mode = UfRuleProtected;
+            pathRule.DosPath = argv[2];
+            if (requireSignature) {
+                signerRule.RuleId = 300;
+                signerRule.MatchType = UfSignerMatchThumbprintSha256;
+                signerRule.ThumbprintSha256Hex = thumbprint;
+            }
+            processRule.RuleId = 200;
+            processRule.FolderRuleId = pathRule.RuleId;
+            processRule.SignerRuleId = requireSignature ? signerRule.RuleId : 0;
+            processRule.Reserved = requireSignature
+                ? UF_PROCESS_RULE_FLAG_REQUIRE_CODE_SIGNATURE : 0;
+            processRule.Access = PF_ACCESS_ALL;
+            processRule.DosImagePath = argv[3];
+            policy.PolicyGeneration = GetTickCount64();
+            policy.PathRuleCount = 1;
+            policy.PathRules = &pathRule;
+            policy.ProtectedProcessRuleCount = 1;
+            policy.ProtectedProcesses = &processRule;
+            policy.SignerRuleCount = requireSignature ? 1 : 0;
+            policy.Signers = requireSignature ? &signerRule : NULL;
+            policy.RevocationTimeoutAction = UfRevocationTimeoutDeny;
+            if (!ConnectOrReport()) {
+                exitCode = 1;
+            } else {
+                error = UfFltReplacePolicyV2(&policy);
+                if (error != ERROR_SUCCESS) {
+                    PrintError(L"V2 보호 정책 설정", error);
+                    exitCode = 1;
+                } else {
+                    wprintf(L"V2 보호 정책을 설정했습니다.\n");
+                }
+            }
+        } else {
+            if (error == ERROR_SUCCESS) {
+                error = ERROR_INVALID_IMAGE_HASH;
+            }
+            PrintError(L"허용 프로세스 로컬 서명 검증", error);
+            exitCode = 1;
+        }
     } else if (_wcsicmp(argv[1], L"--listen") == 0 && argc == 3) {
         unsigned long seconds = wcstoul(argv[2], NULL, 10);
         if (seconds == 0 || !ConnectOrReport()) {
@@ -184,6 +286,7 @@ int wmain(int argc, wchar_t** argv)
         exitCode = 2;
     }
 
+    UfLogWriteFormat(UfLogInfo, "UF_FileFilterTest 종료 exit=%d", exitCode);
     UfFltShutdown();
     return exitCode;
 }

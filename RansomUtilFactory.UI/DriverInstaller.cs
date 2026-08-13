@@ -11,6 +11,11 @@ internal static class DriverInstaller
     private const int ErrorServiceAlreadyRunning = 1056;
     private const int ErrorServiceNotActive = 1062;
     private const int ErrorNotFound = 1168;
+    private const int ErrorNotAllAssigned = 1300;
+    private const uint TokenQuery = 0x0008;
+    private const uint TokenAdjustPrivileges = 0x0020;
+    private const uint PrivilegeEnabled = 0x00000002;
+    private const string LoadDriverPrivilege = "SeLoadDriverPrivilege";
 
     [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -39,18 +44,27 @@ internal static class DriverInstaller
         string? infPath = FindFileDriverInf();
         if (infPath is null)
         {
+            UiLogger.Error("드라이버 INF를 찾지 못함");
             return new(false,
                 "파일 드라이버 설치 패키지를 찾을 수 없습니다. 전체 솔루션을 Debug | x64로 다시 빌드하십시오.",
                 false);
         }
+        UiLogger.Info($"드라이버 INF 설치 시작 path={infPath}");
         if (!DiInstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
+            UiLogger.Error($"DiInstallDriverW 실패 error={error}");
             return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired);
         }
 
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", rebootRequired);
+        }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
+        UiLogger.Info($"FilterLoad 결과 hresult={result} error={loadError}");
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -64,8 +78,14 @@ internal static class DriverInstaller
 
     internal static DriverOperationResult LoadFileDriver()
     {
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+        }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
+        UiLogger.Info($"설치된 미니필터 FilterLoad 결과 hresult={result} error={loadError}");
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -82,28 +102,41 @@ internal static class DriverInstaller
 
     internal static DriverOperationResult UninstallFileDriver()
     {
+        UiLogger.Info("파일 드라이버 제거 작업 시작");
+        if (!TryEnableLoadDriverPrivilege(out int privilegeError))
+        {
+            UiLogger.Error($"드라이버 언로드 권한 활성화 실패 error={privilegeError}");
+            return new(false, $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+        }
         int unloadResult = FilterUnload(FileDriverServiceName);
         int unloadError = HResultToWin32(unloadResult);
+        UiLogger.Info($"FilterUnload 결과 hresult={unloadResult} error={unloadError}");
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
         {
+            UiLogger.Error($"미니필터 언로드 실패 error={unloadError}");
             return new(false, $"미니필터 언로드 실패: {FormatError(unloadError)}", false);
         }
 
         string? infPath = FindFileDriverInf();
         if (infPath is null)
         {
+            UiLogger.Error("드라이버 제거 실패: INF를 찾지 못함");
             return new(false,
                 "파일 드라이버 설치 패키지를 찾을 수 없어 제거를 계속할 수 없습니다.", false);
         }
+        UiLogger.Info($"드라이버 INF 제거 시작 path={infPath}");
         if (!DiUninstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
             if (error == ErrorNotFound)
             {
+                UiLogger.Warn("드라이버 INF 제거 대상이 이미 없음");
                 return new(true, "설치된 파일 드라이버가 없습니다.", false);
             }
+            UiLogger.Error($"DiUninstallDriverW 실패 error={error}");
             return new(false, $"드라이버 패키지 제거 실패: {FormatError(error)}", rebootRequired);
         }
+        UiLogger.Info($"파일 드라이버 제거 완료 rebootRequired={rebootRequired}");
         return new(true, "파일 드라이버를 언로드하고 제거했습니다.", rebootRequired);
     }
 
@@ -140,6 +173,98 @@ internal static class DriverInstaller
         }
         return null;
     }
+
+    private static bool TryEnableLoadDriverPrivilege(out int error)
+    {
+        error = 0;
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery | TokenAdjustPrivileges,
+                out IntPtr token))
+        {
+            error = Marshal.GetLastWin32Error();
+            return false;
+        }
+        try
+        {
+            if (!LookupPrivilegeValue(null, LoadDriverPrivilege, out Luid luid))
+            {
+                error = Marshal.GetLastWin32Error();
+                return false;
+            }
+            TokenPrivileges privileges = new()
+            {
+                PrivilegeCount = 1,
+                Privilege = new LuidAndAttributes
+                {
+                    Luid = luid,
+                    Attributes = PrivilegeEnabled
+                }
+            };
+            if (!AdjustTokenPrivileges(token, false, ref privileges, 0,
+                    IntPtr.Zero, IntPtr.Zero))
+            {
+                error = Marshal.GetLastWin32Error();
+                return false;
+            }
+            error = Marshal.GetLastWin32Error();
+            return error == 0;
+        }
+        finally
+        {
+            CloseHandle(token);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Luid
+    {
+        internal uint LowPart;
+        internal int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LuidAndAttributes
+    {
+        internal Luid Luid;
+        internal uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TokenPrivileges
+    {
+        internal uint PrivilegeCount;
+        internal LuidAndAttributes Privilege;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(
+        IntPtr processHandle,
+        uint desiredAccess,
+        out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LookupPrivilegeValue(
+        string? systemName,
+        string name,
+        out Luid luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AdjustTokenPrivileges(
+        IntPtr tokenHandle,
+        [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges,
+        ref TokenPrivileges newState,
+        uint bufferLength,
+        IntPtr previousState,
+        IntPtr returnLength);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     private static int HResultToWin32(int result)
     {

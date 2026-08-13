@@ -29,7 +29,7 @@
             <TabItem Header="파일 제어">
                 <Grid Margin="10">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="250" />
+                        <RowDefinition Height="340" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
@@ -54,15 +54,56 @@
 
                         <GroupBox Grid.Column="2" Header="보호 폴더" Padding="8">
                             <DockPanel>
-                                <TextBlock DockPanel.Dock="Bottom" Margin="4,6,4,0"
-                                           Foreground="#FF8A3B12" TextWrapping="Wrap"
-                                           Text="현재 보호 정책은 사용자 모드 프로그램의 접근을 차단합니다." />
-                                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
-                                            HorizontalAlignment="Right" Margin="0,8,0,0">
-                                    <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
-                                    <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
+                                <StackPanel DockPanel.Dock="Bottom">
+                                    <TextBlock Margin="4,6,4,0"
+                                               Foreground="#FF8A3B12" TextWrapping="Wrap"
+                                               Text="허용 프로세스마다 읽기·쓰기, 코드 서명 확인 여부와 비교 방식을 설정합니다. 권한을 모두 끄면 정책을 적용할 수 없습니다." />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                Margin="0,8,0,0">
+                                        <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
+                                        <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
+                                    </StackPanel>
+                                    <TextBlock Text="선택 폴더의 허용 프로그램" Margin="4,8,4,2" />
+                                    <ListBox x:Name="AllowedProcessList" Height="86">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding Path}" TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center" ToolTip="{Binding Path}" />
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                        <CheckBox Content="읽기"
+                                                                  IsChecked="{Binding AllowRead, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                        <CheckBox Content="쓰기"
+                                                                  IsChecked="{Binding AllowWrite, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                        <CheckBox Content="코드 서명"
+                                                                  IsChecked="{Binding RequireCodeSignature, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                  Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                        <ComboBox SelectedIndex="{Binding MatchMode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                  ToolTip="프로세스 전체 경로 또는 실행 파일 이름으로 비교합니다."
+                                                                  Width="108" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                            <ComboBoxItem Content="전체 경로" />
+                                                            <ComboBoxItem Content="프로세스 이름" />
+                                                        </ComboBox>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                Margin="0,6,0,0">
+                                        <Button Content="프로그램 추가" Click="AddAllowedProcess_Click" />
+                                        <Button Content="선택 제거" Click="RemoveAllowedProcess_Click" />
+                                    </StackPanel>
                                 </StackPanel>
-                                <ListBox x:Name="ProtectFolderList" ItemsSource="{Binding ProtectFolders}" />
+                                <ListBox x:Name="ProtectFolderList" ItemsSource="{Binding ProtectFolders}"
+                                         DisplayMemberPath="Path"
+                                         SelectionChanged="ProtectFolderList_SelectionChanged" />
                             </DockPanel>
                         </GroupBox>
                     </Grid>
@@ -95,8 +136,8 @@
                                        VerticalAlignment="Center" Margin="0,0,12,0"
                                        TextWrapping="Wrap" />
                             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button Content="정책 적용" Click="ApplyPolicy_Click" />
-                                <Button Content="정책 초기화" Click="ClearPolicy_Click" />
+                                <Button x:Name="ApplyPolicyButton" Content="정책 적용" Click="ApplyPolicy_Click" />
+                                <Button x:Name="ClearPolicyButton" Content="정책 초기화" Click="ClearPolicy_Click" />
                                 <Button Content="로그 지우기" Click="ClearLog_Click" />
                             </StackPanel>
                         </Grid>
