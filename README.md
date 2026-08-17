@@ -1,8 +1,9 @@
 ﻿# RansomUtilFactory
 
-이 저장소에는 1단계 프로젝트인 Windows 파일시스템 미니필터 드라이버
-`UF_FileFilterFactory`, 사용자 모드 통신 DLL `uf_fltwarp`, C 기반 시험 프로그램
-`UF_FileFilterTest`와 WPF 개발 도구 `RansomUtilFactory.UI`가 들어 있습니다.
+이 저장소에는 Windows 파일시스템 미니필터 드라이버 `UF_FileFilterFactory`,
+프로세스 생성·접근 감시 드라이버 `UF_ProcessFilterFactory`, 사용자 모드 통신 DLL
+`uf_fltwarp`, C 기반 시험 프로그램 `UF_FileFilterTest`와 WPF 개발 도구
+`RansomUtilFactory.UI`가 들어 있습니다.
 
 ## 현재 구현된 동작
 
@@ -19,10 +20,15 @@
 - `uf_fltwarp.dll`은 C ABI로 연결, 정책 설정, 상태 조회, 경로 변환 및 비동기
   이벤트 수신 기능을 제공합니다.
 - `UF_FileFilterTest.exe`로 DLL 자체 시험과 드라이버 통신 시험을 수행할 수 있습니다.
+- `UF_ProcessFilterFactory.sys`는 프로세스 생성·종료와 다른 프로세스에 대한 사용자 모드
+  핸들 생성·복제 요청을 감시하고, 등록된 이미지 규칙에 따라 프로세스 실행을 차단합니다.
+- `uf_procwarp.dll`은 프로세스 정책 교체·초기화, 상태 조회 및 이벤트 수신 C ABI를
+  제공합니다. `UF_ProcessControlTest.exe`로 정책 차단과 이벤트 수신을 시험할 수 있습니다.
 
-공유 통신 규약은
-`UF_FileFilterFactory/include/uf_filefilter_protocol.h`에 정의되어 있습니다.
-추후 제작할 `uf_fltwarp.dll`은 이 헤더를 포함하고
+파일 필터 공유 통신 규약은
+`UF_FileFilterFactory/include/uf_filefilter_protocol.h`에, 프로세스 필터 공유 통신
+규약은 `UF_ProcessFilterFactory/include/uf_processfilter_protocol.h`에 정의되어 있습니다.
+`uf_fltwarp.dll`은 파일 필터 헤더를 포함하고
 `FilterConnectCommunicationPort`, `FilterSendMessage`,
 `FilterGetMessage`를 사용합니다.
 
@@ -62,7 +68,7 @@ x64\Debug\bin
 x64\Release\bin
 ```
 
-공용 폴더에는 드라이버 SYS·INF·CAT, 네이티브 DLL, C 시험 프로그램 EXE와
+공용 폴더에는 두 드라이버의 SYS·INF·CAT, 네이티브 DLL, C 시험 프로그램 EXE와
 WPF EXE·DLL·실행 구성 파일이 생성됩니다. PDB는 각 프로젝트의 원래 빌드 출력
 폴더에만 유지하며 공용 `bin`에는 복사하지 않습니다.
 
@@ -82,7 +88,8 @@ UI 초기화 중 로깅 라이브러리 문제로 프로세스가 종료되지 �
 `UfFltInitialize` 초기화 단계가 멈출 때만 확인하는 보조 파일입니다.
 
 커널 드라이버를 `Debug | x64`로 빌드하면 시험 서명에 사용하는
-`UF_FileFilterFactory.cer`도 `x64\Debug\bin`에 복사됩니다. 테스트 인증서는
+`UF_FileFilterFactory.cer`와 `UF_ProcessFilterFactory.cer`도 `x64\Debug\bin`에
+복사됩니다. 테스트 인증서는
 Release 공용 `bin`에는 포함하지 않습니다.
 
 한국어 코드 주석을 코드 페이지 949 환경에서도 손실 없이 컴파일하도록 모든 C/C++
@@ -101,6 +108,18 @@ fltmc load UF_FileFilterFactory
 fltmc filters
 fltmc unload UF_FileFilterFactory
 ```
+
+프로세스 드라이버는 파일시스템 미니필터가 아니므로 시험용 VM에서 INF를 설치한 뒤
+서비스 제어 관리자로 로드합니다.
+
+```powershell
+sc.exe start UF_ProcessFilterFactory
+sc.exe query UF_ProcessFilterFactory
+sc.exe stop UF_ProcessFilterFactory
+```
+
+커널 디버거 또는 DebugView의 커널 캡처에서 `[UF_ProcessFilterFactory]` 접두사의
+`process-create`, `process-exit`, `process-access` 이벤트를 확인할 수 있습니다.
 
 ## 통신 시험 프로그램
 
@@ -122,6 +141,17 @@ fltmc unload UF_FileFilterFactory
 .\x64\Debug\UF_FileFilterTest.exe --listen 30
 ```
 
+프로세스 드라이버를 시험 서명 VM에 설치·로드한 뒤 다음 명령으로 정책과 이벤트를
+확인할 수 있습니다.
+
+```powershell
+.\x64\Debug\UF_ProcessControlTest.exe --state
+.\x64\Debug\UF_ProcessControlTest.exe --block-name UF_ProcessBlockedProbe.exe
+.\x64\Debug\UF_ProcessControlTest.exe --self-test
+.\x64\Debug\UF_ProcessControlTest.exe --clear
+.\x64\Debug\UF_ProcessControlTest.exe --listen 30
+```
+
 `--monitor`와 `--protect`는 현재 정책 전체를 각각 하나의 경로 규칙으로 교체합니다.
 여러 경로와 보호 폴더별 허용 실행 파일은 WPF 개발 도구에서 V2 정책으로 편집할 수 있습니다.
 
@@ -133,7 +163,8 @@ fltmc unload UF_FileFilterFactory
 - `파일 제어`: 보호 폴더별 허용 실행 파일 추가·제거, 읽기·쓰기 권한 및 코드 서명 확인
 - `파일 제어`: 파일 미니필터 설치·제거 및 연결 관리
 - `연결`: INF로 미리 설치한 수동 시작 미니필터를 먼저 로드한 다음 통신 포트에 연결
-- `프로세스 제어`: 설치·제거 버튼을 포함한 후속 구현용 자리 표시 탭
+- `프로세스 제어`: 전체 경로·파일 이름 실행 차단 규칙 편집, 정책 적용·초기화,
+  프로세스 드라이버 설치·로드·제거와 실행·다른 프로세스 접근 이벤트 로그
 
 Debug 실행 파일:
 
@@ -167,6 +198,9 @@ Debug 실행 파일:
 - 현재 버전은 `IRP_MJ_CREATE` 접근을 처리합니다. 쓰기, 이름 변경, 삭제,
   섹션 매핑, 정책 영구 저장, 서명자 신원 확인 및 서비스 복구 기능은 이후
   강화 단계에서 구현합니다.
+- 프로세스 드라이버는 `PsSetCreateProcessNotifyRoutineEx`와 `ObRegisterCallbacks`를
+  사용합니다. 현재 정책은 일치하는 프로세스 생성을 `STATUS_ACCESS_DENIED`로 차단하고,
+  프로세스 핸들 권한은 관찰만 하며 변경하지 않습니다.
 
 ## 개발 문서
 

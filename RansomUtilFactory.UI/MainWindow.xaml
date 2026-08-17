@@ -160,17 +160,87 @@
             </TabItem>
 
             <TabItem Header="프로세스 제어">
-                <Grid>
-                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <TextBlock Text="프로세스 제어" FontSize="26" FontWeight="SemiBold"
-                                   HorizontalAlignment="Center" />
-                        <TextBlock Text="현재 단계에서는 구현하지 않습니다."
-                                   FontSize="15" Foreground="#FF666666" Margin="0,12,0,0" />
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,18,0,0">
-                            <Button Content="프로세스 드라이버 설치" IsEnabled="False" />
-                            <Button Content="프로세스 드라이버 제거" IsEnabled="False" />
-                        </StackPanel>
-                    </StackPanel>
+                <Grid Margin="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="220" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Header="실행 차단 정책" Padding="8">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                                        HorizontalAlignment="Right" Margin="0,8,0,0">
+                                <Button Content="전체 경로 추가" Click="AddProcessPathRule_Click" />
+                                <Button Content="파일 이름 추가" Click="AddProcessNameRule_Click" />
+                                <Button Content="선택 제거" Click="RemoveProcessRule_Click" />
+                                <Button x:Name="ApplyProcessPolicyButton" Content="정책 적용"
+                                        Click="ApplyProcessPolicy_Click" />
+                                <Button x:Name="ClearProcessPolicyButton" Content="정책 초기화"
+                                        Click="ClearProcessPolicy_Click" />
+                            </StackPanel>
+                            <DataGrid x:Name="ProcessRuleGrid" ItemsSource="{Binding ProcessRules}"
+                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      CanUserAddRows="False" SelectionMode="Extended">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="규칙 ID" Binding="{Binding RuleId}" Width="80" />
+                                    <DataGridTextColumn Header="비교 방식" Binding="{Binding MatchModeText}" Width="110" />
+                                    <DataGridTextColumn Header="실행 파일" Binding="{Binding Image}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </GroupBox>
+
+                    <Grid Grid.Row="1" Margin="0,10,0,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="드라이버 설치" Click="InstallProcessDriver_Click" />
+                                <Button Content="로드 및 연결" Click="ConnectProcessDriver_Click" />
+                                <Button Content="연결 해제" Click="DisconnectProcessDriver_Click" />
+                                <Button Content="드라이버 제거" Click="UninstallProcessDriver_Click" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" x:Name="ProcessDriverStatusText"
+                                       Text="설치 상태를 확인하지 않았습니다."
+                                       VerticalAlignment="Center" Margin="8,0,0,0"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                        <Grid Grid.Row="1" Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ProcessPolicyStatusText"
+                                       Text="프로세스 정책이 적용되지 않았습니다."
+                                       VerticalAlignment="Center" TextWrapping="Wrap" />
+                            <Button Grid.Column="1" Content="로그 지우기"
+                                    Click="ClearProcessLog_Click" />
+                        </Grid>
+                    </Grid>
+
+                    <GroupBox Grid.Row="2" Header="프로세스 실행·접근 이벤트 로그" Padding="8">
+                        <DataGrid ItemsSource="{Binding ProcessEventLogs}" AutoGenerateColumns="False"
+                                  IsReadOnly="True" CanUserAddRows="False"
+                                  EnableRowVirtualization="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="시각" Binding="{Binding Time}" Width="145" />
+                                <DataGridTextColumn Header="구분" Binding="{Binding Type}" Width="65" />
+                                <DataGridTextColumn Header="결과" Binding="{Binding Action}" Width="65" />
+                                <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="70" />
+                                <DataGridTextColumn Header="요청 PID" Binding="{Binding RequesterProcessId}" Width="80" />
+                                <DataGridTextColumn Header="대상 PID" Binding="{Binding TargetProcessId}" Width="80" />
+                                <DataGridTextColumn Header="권한" Binding="{Binding DesiredAccess}" Width="95" />
+                                <DataGridTextColumn Header="실행 파일" Binding="{Binding Image}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </GroupBox>
                 </Grid>
             </TabItem>
         </TabControl>

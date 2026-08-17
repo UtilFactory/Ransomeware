@@ -17,6 +17,8 @@
   <ItemGroup Condition="'$(VCTargetsPath)' != ''">
     <ProjectReference Include="..\uf_fltwarp\uf_fltwarp.vcxproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\UF_FileFilterFactory\UF_FileFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\uf_procwarp\uf_procwarp.vcxproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\UF_ProcessFilterFactory\UF_ProcessFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +31,19 @@
     <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll"
           DestinationFolder="$(OutDir)"
           Condition="Exists('$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll')" />
+    <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_procwarp.dll"
+          DestinationFolder="$(OutDir)"
+          Condition="Exists('$(SolutionDir)x64\$(Configuration)\uf_procwarp.dll')" />
+  </Target>
+
+  <Target Name="CopyProcessDriverPackage" AfterTargets="Build">
+    <ItemGroup>
+      <ProcessDriverPackage Include="$(SolutionDir)x64\$(Configuration)\UF_ProcessFilterFactory\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ProcessDriverPackage)"
+          DestinationFolder="$(OutDir)Drivers\UF_ProcessFilterFactory\%(RecursiveDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(ProcessDriverPackage)' != ''" />
   </Target>
 
   <Target Name="CopyFileDriverPackage" AfterTargets="Build">

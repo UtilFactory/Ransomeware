@@ -71,6 +71,7 @@ public partial class MainWindow : Window
         UiLogger.Info("창 로드 시 자동 드라이버 연결 시작");
         ConnectDriver(showFailure: false);
         UiLogger.Info($"창 로드 시 자동 드라이버 연결 완료 connected={_connected} receiver={_receiverStarted}");
+        InitializeProcessControl();
         UiLogger.Info("메인 창 로드 완료");
     }
     catch (Exception exception)
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         UiLogger.Info("메인 창 종료 시작");
+        ShutdownProcessControl();
         DisconnectDriver();
         NativeMethods.UfFltShutdown();
         UiLogger.Info("메인 창 종료 완료");
