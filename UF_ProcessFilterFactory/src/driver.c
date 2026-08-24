@@ -1,4 +1,4 @@
-#include "driver.h"
+﻿#include "driver.h"
 
 DRIVER_INITIALIZE DriverEntry;
 
@@ -22,9 +22,15 @@ UfProcessNotify(
     )
 {
     NTSTATUS decision;
-    ULONG ruleId;
+    ULONG ruleId = 0;
+    BOOLEAN trackProcess = FALSE;
+    WCHAR processName[UF_PROC_MAX_PROCESS_NAME_CHARS];
+    WCHAR processPath[UF_PROC_MAX_PROCESS_PATH_CHARS];
+    ULONG processNameLength = 0;
+    ULONG processPathLength = 0;
 
     if (CreateInfo == NULL) {
+        UfRemoveTrackedProcess(ProcessId);
         UfQueueProcessEvent(
             UfProcEventExit,
             UfProcActionObserved,
@@ -40,7 +46,39 @@ UfProcessNotify(
         return;
     }
 
-    decision = UfEvaluateProcessCreation(Process, CreateInfo, &ruleId);
+    RtlZeroMemory(processName, sizeof(processName));
+    RtlZeroMemory(processPath, sizeof(processPath));
+    decision = UfEvaluateProcessCreation(
+        Process,
+        CreateInfo,
+        &ruleId,
+        &trackProcess,
+        processName,
+        RTL_NUMBER_OF(processName),
+        &processNameLength,
+        processPath,
+        RTL_NUMBER_OF(processPath),
+        &processPathLength);
+
+    if (NT_SUCCESS(decision) && trackProcess) {
+        NTSTATUS trackStatus = UfTrackProcess(
+            Process,
+            ProcessId,
+            ruleId,
+            processName,
+            processNameLength,
+            processPath,
+            processPathLength);
+        if (!NT_SUCCESS(trackStatus)) {
+            KdPrintEx((
+                DPFLTR_IHVDRIVER_ID,
+                DPFLTR_WARNING_LEVEL,
+                "[UF_ProcessFilterFactory] process-track-failed status=0x%08X pid=%p\n",
+                trackStatus,
+                ProcessId));
+        }
+    }
+
     UfQueueProcessEvent(
         UfProcEventCreate,
         NT_SUCCESS(decision) ? UfProcActionObserved : UfProcActionBlocked,
@@ -58,9 +96,10 @@ UfProcessNotify(
         KdPrintEx((
             DPFLTR_IHVDRIVER_ID,
             DPFLTR_WARNING_LEVEL,
-            "[UF_ProcessFilterFactory] process-blocked pid=%p rule=%lu image=%wZ\n",
+            "[UF_ProcessFilterFactory] process-blocked pid=%p rule=%lu status=0x%08X image=%wZ\n",
             ProcessId,
             ruleId,
+            decision,
             CreateInfo->ImageFileName));
         CreateInfo->CreationStatus = decision;
     }
@@ -117,7 +156,6 @@ UfPreProcessHandleOperation(
         0,
         NULL);
 
-    /* 후속 정책에서 위험 권한을 제거할 때 이 DesiredAccess를 수정한다. */
     return OB_PREOP_SUCCESS;
 }
 
@@ -145,6 +183,7 @@ UfDriverUnload(
     UNREFERENCED_PARAMETER(DriverObject);
 
     UfUnregisterCallbacks();
+    UfCancelSignatureWait(STATUS_DELETE_PENDING);
     UfDeleteControlPlane();
     KdPrintEx((
         DPFLTR_IHVDRIVER_ID,

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include <winioctl.h>
@@ -25,6 +25,19 @@ typedef struct _UF_PROC_POLICY_INPUT {
     const UF_PROC_RULE_INPUT* Rules;
 } UF_PROC_POLICY_INPUT;
 
+typedef struct _UF_PROC_RULE_INPUT_V2 {
+    unsigned long RuleId;
+    const wchar_t* ProcessName;
+    const wchar_t* ProcessPath;
+    unsigned short IsSign;
+    unsigned short IsCmpFullPath;
+} UF_PROC_RULE_INPUT_V2;
+
+typedef struct _UF_PROC_POLICY_INPUT_V2 {
+    unsigned long PolicyCount;
+    const UF_PROC_RULE_INPUT_V2* Policies;
+} UF_PROC_POLICY_INPUT_V2;
+
 typedef void (__stdcall* UF_PROC_EVENT_CALLBACK)(
     const UF_PROC_EVENT* Event,
     void* Context);
@@ -36,6 +49,13 @@ UF_PROCWARP_API void __stdcall UfProcDisconnect(void);
 UF_PROCWARP_API int __stdcall UfProcIsConnected(void);
 UF_PROCWARP_API unsigned long __stdcall UfProcReplacePolicy(
     const UF_PROC_POLICY_INPUT* Policy);
+UF_PROCWARP_API unsigned long __stdcall UfProcReplacePolicyV2(
+    const UF_PROC_POLICY_INPUT_V2* Policy);
+UF_PROCWARP_API unsigned long __stdcall UfProcAddPolicyV2(
+    const UF_PROC_POLICY_INPUT_V2* Policy);
+UF_PROCWARP_API unsigned long __stdcall UfProcRemovePolicyNames(
+    const wchar_t* const* ProcessNames,
+    unsigned long ProcessNameCount);
 UF_PROCWARP_API unsigned long __stdcall UfProcClearPolicy(void);
 UF_PROCWARP_API unsigned long __stdcall UfProcQueryState(
     UF_PROC_STATE_REPLY* State);

@@ -1,7 +1,9 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <limits.h>
 #include <stdio.h>
+#include <wintrust.h>
+#include <softpub.h>
 #include "../include/uf_procwarp.h"
 
 #ifndef _countof
@@ -12,6 +14,7 @@ static SRWLOCK gLock = SRWLOCK_INIT;
 static HANDLE gDevice = INVALID_HANDLE_VALUE;
 static HANDLE gStopEvent = NULL;
 static HANDLE gReceiverThread = NULL;
+static HANDLE gSignatureThread = NULL;
 static UF_PROC_EVENT_CALLBACK gCallback = NULL;
 static void* gCallbackContext = NULL;
 
@@ -90,13 +93,11 @@ UfProcBuildFullPathRule(
     )
 {
     wchar_t fullPath[UF_PROC_MAX_IMAGE_CHARS];
-    wchar_t openPath[UF_PROC_MAX_IMAGE_CHARS];
     wchar_t devicePrefix[UF_PROC_MAX_IMAGE_CHARS];
     wchar_t devicePath[UF_PROC_MAX_IMAGE_CHARS];
     wchar_t drive[3];
     DWORD fullLength;
     DWORD deviceLength;
-    int written;
     unsigned long result;
 
     fullLength = GetFullPathNameW(Path, (DWORD)_countof(fullPath), fullPath, NULL);
@@ -106,19 +107,6 @@ UfProcBuildFullPathRule(
     if (fullLength >= _countof(fullPath) ||
         fullLength < 3 || fullPath[1] != L':' || fullPath[2] != L'\\') {
         return ERROR_BAD_PATHNAME;
-    }
-
-    written = swprintf_s(openPath, _countof(openPath), L"\\??\\%s", fullPath);
-    if (written < 0) {
-        return ERROR_FILENAME_EXCED_RANGE;
-    }
-    result = UfProcCopyString(
-        openPath,
-        Rule->Image,
-        UF_PROC_MAX_IMAGE_CHARS,
-        &Rule->ImageLengthChars);
-    if (result != ERROR_SUCCESS) {
-        return result;
     }
 
     drive[0] = fullPath[0];
@@ -132,20 +120,85 @@ UfProcBuildFullPathRule(
         return GetLastError();
     }
 
-    written = swprintf_s(
+    if (swprintf_s(
         devicePath,
         _countof(devicePath),
         L"%s%s",
         devicePrefix,
-        fullPath + 2);
-    if (written < 0) {
+        fullPath + 2) < 0) {
         return ERROR_FILENAME_EXCED_RANGE;
     }
-    return UfProcCopyString(
+    result = UfProcCopyString(
+        UfProcFindImageName(fullPath),
+        Rule->ProcessName,
+        UF_PROC_MAX_PROCESS_NAME_CHARS,
+        &Rule->ProcessNameLengthChars);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    result = UfProcCopyString(
         devicePath,
-        Rule->DeviceImage,
-        UF_PROC_MAX_IMAGE_CHARS,
-        &Rule->DeviceImageLengthChars);
+        Rule->ProcessPath,
+        UF_PROC_MAX_PROCESS_PATH_CHARS,
+        &Rule->ProcessPathLengthChars);
+    if (result == ERROR_SUCCESS) {
+        Rule->IsCmpFullPath = 1;
+    }
+    return result;
+}
+
+static unsigned long
+UfProcBuildPolicyRuleV2(
+    const UF_PROC_RULE_INPUT_V2* Input,
+    UF_PROC_POLICY_RULE* Rule
+    )
+{
+    unsigned long result;
+
+    if (Input == NULL || Input->RuleId == 0 || Input->ProcessName == NULL ||
+        UfProcIsCriticalImage(Input->ProcessName)) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(Rule, sizeof(*Rule));
+    Rule->RuleId = Input->RuleId;
+    Rule->IsSign = Input->IsSign;
+    Rule->IsCmpFullPath = Input->IsCmpFullPath;
+    result = UfProcCopyString(
+        Input->ProcessName,
+        Rule->ProcessName,
+        UF_PROC_MAX_PROCESS_NAME_CHARS,
+        &Rule->ProcessNameLengthChars);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    if (Input->IsCmpFullPath != 0) {
+        if (Input->ProcessPath == NULL) {
+            return ERROR_INVALID_PARAMETER;
+        }
+        result = UfProcBuildFullPathRule(Input->ProcessPath, Rule);
+        if (result != ERROR_SUCCESS) {
+            return result;
+        }
+        Rule->RuleId = Input->RuleId;
+        Rule->IsSign = Input->IsSign;
+        result = UfProcCopyString(
+            Input->ProcessName,
+            Rule->ProcessName,
+            UF_PROC_MAX_PROCESS_NAME_CHARS,
+            &Rule->ProcessNameLengthChars);
+        return result;
+    }
+    if (Input->ProcessPath != NULL && Input->ProcessPath[0] != L'\0') {
+        result = UfProcCopyString(
+            Input->ProcessPath,
+            Rule->ProcessPath,
+            UF_PROC_MAX_PROCESS_PATH_CHARS,
+            &Rule->ProcessPathLengthChars);
+        if (result != ERROR_SUCCESS) {
+            return result;
+        }
+    }
+    return ERROR_SUCCESS;
 }
 
 static unsigned long
@@ -185,6 +238,185 @@ UfProcSendIoctl(
         *BytesReturned = returned;
     }
     return result;
+}
+
+static int
+UfProcGetProcessImagePath(
+    unsigned long ProcessId,
+    wchar_t* Path,
+    unsigned long PathChars
+    )
+{
+    HANDLE process;
+    DWORD length = PathChars;
+    int result = 0;
+
+    process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    if (process == NULL) {
+        return 0;
+    }
+    if (QueryFullProcessImageNameW(process, 0, Path, &length) != FALSE &&
+        length != 0 && length < PathChars) {
+        result = 1;
+    }
+    CloseHandle(process);
+    return result;
+}
+
+static int
+UfProcConvertDevicePathToDos(
+    const wchar_t* DevicePath,
+    unsigned long DevicePathLength,
+    wchar_t* DosPath,
+    unsigned long DosPathChars
+    )
+{
+    wchar_t drive[3];
+    wchar_t deviceName[UF_PROC_MAX_PROCESS_PATH_CHARS];
+    wchar_t* suffix;
+    DWORD deviceLength;
+    unsigned int driveIndex;
+
+    if (DevicePath == NULL || DevicePathLength == 0) {
+        return 0;
+    }
+    for (driveIndex = 0; driveIndex < 26; ++driveIndex) {
+        drive[0] = (wchar_t)(L'A' + driveIndex);
+        drive[1] = L':';
+        drive[2] = L'\0';
+        deviceLength = QueryDosDeviceW(
+            drive,
+            deviceName,
+            (DWORD)_countof(deviceName));
+        if (deviceLength == 0 || deviceLength >= _countof(deviceName)) {
+            continue;
+        }
+        if (DevicePathLength < deviceLength ||
+            _wcsnicmp(DevicePath, deviceName, deviceLength) != 0) {
+            continue;
+        }
+        suffix = (wchar_t*)DevicePath + deviceLength;
+        if (swprintf_s(DosPath, DosPathChars, L"%ls%ls", drive, suffix) >= 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+UfProcVerifyImageSignature(
+    const UF_PROC_SIGNATURE_REQUEST* Request
+    )
+{
+    wchar_t path[UF_PROC_MAX_PROCESS_PATH_CHARS];
+    WINTRUST_FILE_INFO fileInfo;
+    WINTRUST_DATA trustData;
+    GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    LONG verifyResult;
+
+    ZeroMemory(path, sizeof(path));
+    if (Request->PathLengthChars >= 4 &&
+        Request->ProcessPath[0] == L'\\' &&
+        Request->ProcessPath[1] == L'?' &&
+        Request->ProcessPath[2] == L'?' &&
+        Request->ProcessPath[3] == L'\\') {
+        unsigned long pathLength = Request->PathLengthChars - 4;
+        if (pathLength >= _countof(path)) {
+            return 0;
+        }
+        CopyMemory(path, Request->ProcessPath + 4, pathLength * sizeof(wchar_t));
+        path[pathLength] = L'\0';
+    } else if (Request->PathLengthChars >= 2 && Request->ProcessPath[1] == L':') {
+        if (Request->PathLengthChars >= _countof(path)) {
+            return 0;
+        }
+        CopyMemory(path, Request->ProcessPath, Request->PathLengthChars * sizeof(wchar_t));
+        path[Request->PathLengthChars] = L'\0';
+    } else if (!UfProcConvertDevicePathToDos(
+                   Request->ProcessPath,
+                   Request->PathLengthChars,
+                   path,
+                   (unsigned long)_countof(path)) &&
+               (Request->ProcessId == 0 || !UfProcGetProcessImagePath(
+                   Request->ProcessId,
+                   path,
+                   (unsigned long)_countof(path)))) {
+        return 0;
+    }
+
+    ZeroMemory(&fileInfo, sizeof(fileInfo));
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath = path;
+    ZeroMemory(&trustData, sizeof(trustData));
+    trustData.cbStruct = sizeof(trustData);
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.pFile = &fileInfo;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+    verifyResult = WinVerifyTrust(NULL, &policyGuid, &trustData);
+    trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+    (void)WinVerifyTrust(NULL, &policyGuid, &trustData);
+    return verifyResult == ERROR_SUCCESS;
+}
+
+static DWORD WINAPI
+UfProcSignatureMain(
+    void* Parameter
+    )
+{
+    UF_PROC_WAIT_SIGNATURE waitRequest;
+    UF_PROC_SIGNATURE_REQUEST signatureRequest;
+
+    UNREFERENCED_PARAMETER(Parameter);
+    ZeroMemory(&waitRequest, sizeof(waitRequest));
+    waitRequest.Header.Version = UF_PROC_PROTOCOL_VERSION;
+    waitRequest.Header.Size = sizeof(waitRequest);
+    waitRequest.TimeoutMs = UF_PROC_SIGNATURE_TIMEOUT_MS;
+    for (;;) {
+        unsigned long bytesReturned = 0;
+        unsigned long result;
+        UF_PROC_SIGNATURE_RESPONSE response;
+
+        if (WaitForSingleObject(gStopEvent, 0) == WAIT_OBJECT_0) {
+            break;
+        }
+        ZeroMemory(&signatureRequest, sizeof(signatureRequest));
+        result = UfProcSendIoctl(
+            UF_PROC_IOCTL_WAIT_SIGNATURE,
+            &waitRequest,
+            sizeof(waitRequest),
+            &signatureRequest,
+            sizeof(signatureRequest),
+            &bytesReturned);
+        if (result == ERROR_OPERATION_ABORTED ||
+            result == ERROR_INVALID_HANDLE ||
+            result == ERROR_DEVICE_NOT_CONNECTED) {
+            break;
+        }
+        if (result != ERROR_SUCCESS ||
+            bytesReturned != sizeof(signatureRequest) ||
+            signatureRequest.Header.Version != UF_PROC_PROTOCOL_VERSION ||
+            signatureRequest.Header.Size != sizeof(signatureRequest) ||
+            signatureRequest.PathLengthChars >= UF_PROC_MAX_PROCESS_PATH_CHARS) {
+            continue;
+        }
+        ZeroMemory(&response, sizeof(response));
+        response.Header.Version = UF_PROC_PROTOCOL_VERSION;
+        response.Header.Size = sizeof(response);
+        response.RequestId = signatureRequest.RequestId;
+        response.Decision = UfProcVerifyImageSignature(&signatureRequest) != 0
+            ? UfProcSignatureAllow
+            : UfProcSignatureDeny;
+        (void)UfProcSendIoctl(
+            UF_PROC_IOCTL_COMPLETE_SIGNATURE,
+            &response,
+            sizeof(response),
+            NULL,
+            0,
+            NULL);
+    }
+    return ERROR_SUCCESS;
 }
 
 static DWORD WINAPI
@@ -273,6 +505,42 @@ UfProcShutdown(
     UfProcDisconnect();
 }
 
+static HANDLE
+UfProcOpenDevice(
+    void
+    )
+{
+    HANDLE device;
+    DWORD firstError;
+
+    device = CreateFileW(
+        UF_PROC_DEVICE_WIN32_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (device != INVALID_HANDLE_VALUE) {
+        return device;
+    }
+
+    firstError = GetLastError();
+    if (firstError != ERROR_FILE_NOT_FOUND && firstError != ERROR_PATH_NOT_FOUND) {
+        return INVALID_HANDLE_VALUE;
+    }
+
+    /* 전역 DOS 네임스페이스를 명시한 경로도 시도해 세션별 매핑 차이를 흡수한다. */
+    return CreateFileW(
+        UF_PROC_DEVICE_WIN32_GLOBAL_NAME,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+}
+
 unsigned long __stdcall
 UfProcConnect(
     void
@@ -285,14 +553,7 @@ UfProcConnect(
         ReleaseSRWLockExclusive(&gLock);
         return ERROR_ALREADY_EXISTS;
     }
-    device = CreateFileW(
-        UF_PROC_DEVICE_WIN32_NAME,
-        GENERIC_READ | GENERIC_WRITE,
-        0,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL);
+    device = UfProcOpenDevice();
     if (device == INVALID_HANDLE_VALUE) {
         unsigned long result = GetLastError();
         ReleaseSRWLockExclusive(&gLock);
@@ -357,11 +618,11 @@ UfProcReplacePolicy(
     }
     request->Header.Version = UF_PROC_PROTOCOL_VERSION;
     request->Header.Size = sizeof(*request);
-    request->RuleCount = Policy->RuleCount;
+    request->PolicyCount = Policy->RuleCount;
 
     for (index = 0; index < Policy->RuleCount; ++index) {
         const UF_PROC_RULE_INPUT* input = &Policy->Rules[index];
-        UF_PROC_POLICY_RULE* rule = &request->Rules[index];
+        UF_PROC_POLICY_RULE* rule = &request->Policies[index];
 
         if (input->RuleId == 0 || input->Image == NULL ||
             UfProcIsCriticalImage(input->Image)) {
@@ -369,16 +630,15 @@ UfProcReplacePolicy(
             goto Exit;
         }
         rule->RuleId = input->RuleId;
-        rule->MatchMode = input->MatchMode;
         if (input->MatchMode == UfProcMatchFullPath) {
             result = UfProcBuildFullPathRule(input->Image, rule);
         } else if (input->MatchMode == UfProcMatchImageName &&
                    UfProcFindImageName(input->Image) == input->Image) {
             result = UfProcCopyString(
                 input->Image,
-                rule->Image,
-                UF_PROC_MAX_IMAGE_CHARS,
-                &rule->ImageLengthChars);
+                rule->ProcessName,
+                UF_PROC_MAX_PROCESS_NAME_CHARS,
+                &rule->ProcessNameLengthChars);
         } else {
             result = ERROR_INVALID_PARAMETER;
         }
@@ -395,6 +655,114 @@ UfProcReplacePolicy(
         0,
         NULL);
 
+Exit:
+    SecureZeroMemory(request, sizeof(*request));
+    HeapFree(GetProcessHeap(), 0, request);
+    return result;
+}
+
+static unsigned long
+UfProcSendPolicyV2(
+    unsigned long ControlCode,
+    const UF_PROC_POLICY_INPUT_V2* Policy
+    )
+{
+    UF_PROC_REPLACE_POLICY* request;
+    unsigned long index;
+    unsigned long result = ERROR_SUCCESS;
+
+    if (Policy == NULL || Policy->PolicyCount > UF_PROC_MAX_POLICIES ||
+        (Policy->PolicyCount != 0 && Policy->Policies == NULL)) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    request = (UF_PROC_REPLACE_POLICY*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*request));
+    if (request == NULL) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    request->Header.Version = UF_PROC_PROTOCOL_VERSION;
+    request->Header.Size = sizeof(*request);
+    request->PolicyCount = Policy->PolicyCount;
+    for (index = 0; index < Policy->PolicyCount; ++index) {
+        result = UfProcBuildPolicyRuleV2(
+            &Policy->Policies[index],
+            &request->Policies[index]);
+        if (result != ERROR_SUCCESS) {
+            goto Exit;
+        }
+    }
+    result = UfProcSendIoctl(
+        ControlCode,
+        request,
+        sizeof(*request),
+        NULL,
+        0,
+        NULL);
+Exit:
+    SecureZeroMemory(request, sizeof(*request));
+    HeapFree(GetProcessHeap(), 0, request);
+    return result;
+}
+
+unsigned long __stdcall
+UfProcReplacePolicyV2(
+    const UF_PROC_POLICY_INPUT_V2* Policy
+    )
+{
+    return UfProcSendPolicyV2(UF_PROC_IOCTL_REPLACE_POLICY, Policy);
+}
+
+unsigned long __stdcall
+UfProcAddPolicyV2(
+    const UF_PROC_POLICY_INPUT_V2* Policy
+    )
+{
+    return UfProcSendPolicyV2(UF_PROC_IOCTL_ADD_POLICY, Policy);
+}
+
+unsigned long __stdcall
+UfProcRemovePolicyNames(
+    const wchar_t* const* ProcessNames,
+    unsigned long ProcessNameCount
+    )
+{
+    UF_PROC_REMOVE_POLICY* request;
+    unsigned long index;
+    unsigned long result = ERROR_SUCCESS;
+
+    if (ProcessNameCount > UF_PROC_MAX_POLICIES ||
+        (ProcessNameCount != 0 && ProcessNames == NULL)) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    request = (UF_PROC_REMOVE_POLICY*)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*request));
+    if (request == NULL) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    request->Header.Version = UF_PROC_PROTOCOL_VERSION;
+    request->Header.Size = sizeof(*request);
+    request->PolicyCount = ProcessNameCount;
+    for (index = 0; index < ProcessNameCount; ++index) {
+        if (ProcessNames[index] == NULL) {
+            result = ERROR_INVALID_PARAMETER;
+            goto Exit;
+        }
+        result = UfProcCopyString(
+            ProcessNames[index],
+            request->Policies[index].ProcessName,
+            UF_PROC_MAX_PROCESS_NAME_CHARS,
+            &request->Policies[index].ProcessNameLengthChars);
+        if (result != ERROR_SUCCESS) {
+            goto Exit;
+        }
+    }
+    result = UfProcSendIoctl(
+        UF_PROC_IOCTL_REMOVE_POLICY,
+        request,
+        sizeof(*request),
+        NULL,
+        0,
+        NULL);
 Exit:
     SecureZeroMemory(request, sizeof(*request));
     HeapFree(GetProcessHeap(), 0, request);
@@ -458,6 +826,7 @@ UfProcStartEventReceiver(
 {
     HANDLE stopEvent;
     HANDLE thread;
+    HANDLE signatureThread;
 
     if (Callback == NULL) {
         return ERROR_INVALID_PARAMETER;
@@ -490,7 +859,23 @@ UfProcStartEventReceiver(
         ReleaseSRWLockExclusive(&gLock);
         return result;
     }
+    signatureThread = CreateThread(NULL, 0, UfProcSignatureMain, NULL, 0, NULL);
+    if (signatureThread == NULL) {
+        unsigned long result = GetLastError();
+        SetEvent(stopEvent);
+        ReleaseSRWLockExclusive(&gLock);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+        CloseHandle(stopEvent);
+        AcquireSRWLockExclusive(&gLock);
+        gStopEvent = NULL;
+        gCallback = NULL;
+        gCallbackContext = NULL;
+        ReleaseSRWLockExclusive(&gLock);
+        return result;
+    }
     gReceiverThread = thread;
+    gSignatureThread = signatureThread;
     ReleaseSRWLockExclusive(&gLock);
     return ERROR_SUCCESS;
 }
@@ -501,12 +886,14 @@ UfProcStopEventReceiver(
     )
 {
     HANDLE thread;
+    HANDLE signatureThread;
     HANDLE stopEvent;
 
     AcquireSRWLockExclusive(&gLock);
     thread = gReceiverThread;
+    signatureThread = gSignatureThread;
     stopEvent = gStopEvent;
-    if (thread == NULL) {
+    if (thread == NULL && signatureThread == NULL) {
         ReleaseSRWLockExclusive(&gLock);
         return;
     }
@@ -514,11 +901,18 @@ UfProcStopEventReceiver(
     ReleaseSRWLockExclusive(&gLock);
 
     WaitForSingleObject(thread, INFINITE);
+    if (signatureThread != NULL) {
+        WaitForSingleObject(signatureThread, INFINITE);
+    }
     CloseHandle(thread);
+    if (signatureThread != NULL) {
+        CloseHandle(signatureThread);
+    }
     CloseHandle(stopEvent);
 
     AcquireSRWLockExclusive(&gLock);
     gReceiverThread = NULL;
+    gSignatureThread = NULL;
     gStopEvent = NULL;
     gCallback = NULL;
     gCallbackContext = NULL;

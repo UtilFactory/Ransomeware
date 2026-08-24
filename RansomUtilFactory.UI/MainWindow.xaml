@@ -12,15 +12,36 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse x:Name="ConnectionIndicator" Width="12" Height="12"
-                             Fill="#FFB3261E" Margin="0,0,8,0" />
-                    <TextBlock x:Name="ConnectionText" Text="드라이버 연결 안 됨"
-                               FontWeight="SemiBold" VerticalAlignment="Center" />
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="연결" Click="Connect_Click" />
-                    <Button Content="연결 해제" Click="Disconnect_Click" />
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="드라이버 연결 상태" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <StackPanel Grid.Row="1" Orientation="Horizontal">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,24,0">
+                            <Ellipse x:Name="FileDriverConnectionIndicator" Width="12" Height="12"
+                                     Fill="#FFB3261E" Margin="0,0,8,0" />
+                            <TextBlock x:Name="FileDriverConnectionText" Text="파일 필터: 연결 안 됨"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse x:Name="ProcessDriverConnectionIndicator" Width="12" Height="12"
+                                     Fill="#FFB3261E" Margin="0,0,8,0" />
+                            <TextBlock x:Name="ProcessDriverConnectionText" Text="프로세스 제어 필터: 연결 안 됨"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+                <StackPanel Grid.Column="1" Orientation="Vertical" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="파일 필터 연결" Click="Connect_Click" />
+                        <Button Content="파일 필터 연결 해제" Click="Disconnect_Click" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="프로세스 필터 로드·연결" Click="ConnectProcessDriver_Click" />
+                        <Button Content="프로세스 필터 연결 해제" Click="DisconnectProcessDriver_Click" />
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>
@@ -119,8 +140,8 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Top">
-                                <Button Content="파일 드라이버 설치" Click="InstallFileDriver_Click" />
-                                <Button Content="파일 드라이버 제거" Click="UninstallFileDriver_Click" />
+                                <Button Content="파일 필터 설치" Click="InstallFileDriver_Click" />
+                                <Button Content="파일 필터 제거" Click="UninstallFileDriver_Click" />
                             </StackPanel>
                             <TextBlock Grid.Column="1" x:Name="FileDriverStatusText"
                                        Text="설치 상태를 확인하지 않았습니다."
@@ -167,7 +188,7 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <GroupBox Header="실행 차단 정책" Padding="8">
+                    <GroupBox Header="프로세스 실행 허용 정책" Padding="8">
                         <DockPanel>
                             <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
                                         HorizontalAlignment="Right" Margin="0,8,0,0">
@@ -180,12 +201,17 @@
                                         Click="ClearProcessPolicy_Click" />
                             </StackPanel>
                             <DataGrid x:Name="ProcessRuleGrid" ItemsSource="{Binding ProcessRules}"
-                                      AutoGenerateColumns="False" IsReadOnly="True"
+                                      AutoGenerateColumns="False" IsReadOnly="False"
                                       CanUserAddRows="False" SelectionMode="Extended">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="규칙 ID" Binding="{Binding RuleId}" Width="80" />
-                                    <DataGridTextColumn Header="비교 방식" Binding="{Binding MatchModeText}" Width="110" />
-                                    <DataGridTextColumn Header="실행 파일" Binding="{Binding Image}" Width="*" />
+                                    <DataGridTextColumn Header="규칙 ID" Binding="{Binding RuleId}" Width="80"
+                                                        IsReadOnly="True" />
+                                    <DataGridTextColumn Header="비교 방식" Binding="{Binding MatchModeText}" Width="110"
+                                                        IsReadOnly="True" />
+                                    <DataGridTextColumn Header="실행 파일" Binding="{Binding Image}" Width="*"
+                                                        IsReadOnly="True" />
+                                    <DataGridCheckBoxColumn Header="코드 서명 필요" Binding="{Binding IsSign, Mode=TwoWay}"
+                                                            Width="110" />
                                 </DataGrid.Columns>
                             </DataGrid>
                         </DockPanel>
@@ -202,10 +228,10 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Orientation="Horizontal">
-                                <Button Content="드라이버 설치" Click="InstallProcessDriver_Click" />
-                                <Button Content="로드 및 연결" Click="ConnectProcessDriver_Click" />
-                                <Button Content="연결 해제" Click="DisconnectProcessDriver_Click" />
-                                <Button Content="드라이버 제거" Click="UninstallProcessDriver_Click" />
+                                <Button Content="프로세스 제어 필터 설치" Click="InstallProcessDriver_Click" />
+                                <Button Content="프로세스 필터 로드·연결" Click="ConnectProcessDriver_Click" />
+                                <Button Content="프로세스 필터 연결 해제" Click="DisconnectProcessDriver_Click" />
+                                <Button Content="프로세스 제어 필터 제거" Click="UninstallProcessDriver_Click" />
                             </StackPanel>
                             <TextBlock Grid.Column="1" x:Name="ProcessDriverStatusText"
                                        Text="설치 상태를 확인하지 않았습니다."

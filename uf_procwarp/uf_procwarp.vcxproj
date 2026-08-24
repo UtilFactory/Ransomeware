@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
@@ -31,7 +31,7 @@
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_ProcessFilterFactory\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
-    <Link><AdditionalDependencies>Kernel32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link><AdditionalDependencies>Kernel32.lib;Wintrust.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
     <PostBuildEvent>
       <Command>if not exist "$(CommonBinDir)" mkdir "$(CommonBinDir)"
 copy /Y "$(TargetPath)" "$(CommonBinDir)"

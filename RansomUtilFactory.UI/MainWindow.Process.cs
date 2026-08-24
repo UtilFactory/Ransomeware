@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -19,24 +19,53 @@ public partial class MainWindow
 
     private void InitializeProcessControl()
     {
+        if (!EnsureProcessCommunicationInitialized(showFailure: false))
+        {
+            return;
+        }
+        ConnectProcessControl(showFailure: false);
+        UiLogger.Info($"프로세스 제어 초기화 완료 connected={_processConnected}");
+    }
+
+    private bool EnsureProcessCommunicationInitialized(bool showFailure)
+    {
+        if (_processInitialized)
+        {
+            return true;
+        }
+
         try
         {
+            UiLogger.Info("프로세스 통신 DLL 초기화 시작");
             ProcessNativeMethods.ValidateAbi();
             uint error = ProcessNativeMethods.UfProcInitialize();
             if (error != ProcessNativeMethods.ErrorSuccess)
             {
-                ShowProcessNativeError("프로세스 통신 DLL 초기화", error);
-                return;
+                UiLogger.Error($"프로세스 통신 DLL 초기화 실패 GetLastError={error} message={GetProcessNativeErrorMessage(error)}");
+                SetProcessConnectionState(false, $"GetLastError={error}");
+                if (showFailure)
+                {
+                    ShowProcessNativeError("프로세스 통신 DLL 초기화", error);
+                }
+                return false;
             }
+
             _processEventCallback = ReceiveProcessEvent;
             _processInitialized = true;
-            ConnectProcessControl(showFailure: false);
-            UiLogger.Info($"프로세스 제어 초기화 완료 connected={_processConnected}");
+            UiLogger.Info("프로세스 통신 DLL 초기화 완료");
+            return true;
         }
         catch (Exception exception)
         {
             UiLogger.Error("프로세스 제어 초기화 실패", exception);
             ProcessDriverStatusText.Text = $"프로세스 통신 초기화 실패: {exception.Message}";
+            SetProcessConnectionState(false, "초기화 예외");
+            if (showFailure)
+            {
+                MessageBox.Show(exception.Message, "프로세스 통신 초기화",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return false;
         }
     }
 
@@ -55,7 +84,7 @@ public partial class MainWindow
     {
         OpenFileDialog dialog = new()
         {
-            Title = "전체 경로로 차단할 실행 파일 선택",
+            Title = "전체 경로로 허용할 실행 파일 선택",
             Filter = "실행 파일 (*.exe)|*.exe|모든 파일 (*.*)|*.*",
             CheckFileExists = true
         };
@@ -69,7 +98,7 @@ public partial class MainWindow
     {
         OpenFileDialog dialog = new()
         {
-            Title = "파일 이름으로 차단할 실행 파일 선택",
+            Title = "파일 이름으로 허용할 실행 파일 선택",
             Filter = "실행 파일 (*.exe)|*.exe|모든 파일 (*.*)|*.*",
             CheckFileExists = true
         };
@@ -82,13 +111,19 @@ public partial class MainWindow
 
     private void AddProcessRule(uint matchMode, string image)
     {
-        if (ProcessRules.Any(rule =>
-                rule.MatchMode == matchMode &&
-                string.Equals(rule.Image, image, StringComparison.OrdinalIgnoreCase)))
+        string processName = matchMode == ProcessNativeMethods.MatchFullPath
+            ? Path.GetFileName(image)
+            : image;
+        ProcessRuleEntry? duplicate = ProcessRules.FirstOrDefault(rule =>
+            string.Equals(
+                rule.MatchMode == ProcessNativeMethods.MatchFullPath
+                    ? Path.GetFileName(rule.Image)
+                    : rule.Image,
+                processName,
+                StringComparison.OrdinalIgnoreCase));
+        if (duplicate is not null)
         {
-            MessageBox.Show("같은 프로세스 차단 규칙이 이미 있습니다.", "프로세스 정책",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            ProcessRules.Remove(duplicate);
         }
         ProcessRules.Add(new ProcessRuleEntry(_nextProcessRuleId++, matchMode, image));
     }
@@ -161,15 +196,25 @@ public partial class MainWindow
 
     private void ConnectProcessControl(bool showFailure)
     {
-        if (!_processInitialized || _processConnected)
+        if (!EnsureProcessCommunicationInitialized(showFailure))
         {
+            return;
+        }
+        if (_processConnected)
+        {
+            UiLogger.Debug("프로세스 제어 필터 연결 요청 무시: 이미 연결됨");
+            ProcessDriverStatusText.Text = "프로세스 제어 필터 연결됨";
+            SetProcessConnectionState(true);
             return;
         }
         uint error = ProcessNativeMethods.UfProcConnect();
         if (error != ProcessNativeMethods.ErrorSuccess &&
             error != ProcessNativeMethods.ErrorAlreadyExists)
         {
-            ProcessDriverStatusText.Text = $"프로세스 드라이버 연결 실패: {error}";
+            string message = GetProcessNativeErrorMessage(error);
+            UiLogger.Warn($"프로세스 제어 필터 통신 연결 실패 GetLastError={error} message={message}");
+            ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결 실패 (GetLastError={error}): {message}";
+            SetProcessConnectionState(false, $"GetLastError={error}");
             if (showFailure)
             {
                 ShowProcessNativeError("프로세스 드라이버 연결", error);
@@ -184,18 +229,30 @@ public partial class MainWindow
         {
             ProcessNativeMethods.UfProcDisconnect();
             _processConnected = false;
+            UiLogger.Warn($"프로세스 이벤트 수신 시작 실패 GetLastError={error} message={GetProcessNativeErrorMessage(error)}");
             if (showFailure)
             {
                 ShowProcessNativeError("프로세스 이벤트 수신", error);
             }
+            SetProcessConnectionState(false, $"GetLastError={error}");
             return;
         }
         _processReceiverStarted = true;
         ProcessNativeMethods.StateReply state = new();
         error = ProcessNativeMethods.UfProcQueryState(ref state);
-        ProcessDriverStatusText.Text = error == ProcessNativeMethods.ErrorSuccess
-            ? $"연결됨 · 정책 세대 {state.PolicyGeneration} · 규칙 {state.RuleCount}개"
-            : "프로세스 드라이버에 연결되었습니다.";
+        if (error == ProcessNativeMethods.ErrorSuccess)
+        {
+            string detail = $"정책 세대 {state.PolicyGeneration} · 정책 {state.PolicyCount}개";
+            ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결됨 · {detail}";
+            SetProcessConnectionState(true, detail);
+        }
+        else
+        {
+            string message = GetProcessNativeErrorMessage(error);
+            UiLogger.Warn($"프로세스 상태 조회 실패 GetLastError={error} message={message}");
+            ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결됨 · 상태 조회 실패 (GetLastError={error})";
+            SetProcessConnectionState(true, $"상태 조회 실패 GetLastError={error}");
+        }
     }
 
     private void DisconnectProcessControl()
@@ -212,7 +269,8 @@ public partial class MainWindow
         }
         if (ProcessDriverStatusText is not null)
         {
-            ProcessDriverStatusText.Text = "프로세스 드라이버 연결이 해제되었습니다.";
+            ProcessDriverStatusText.Text = "프로세스 제어 필터 연결이 해제되었습니다.";
+            SetProcessConnectionState(false);
         }
     }
 
@@ -226,7 +284,7 @@ public partial class MainWindow
         }
         if (ProcessRules.Count > 32)
         {
-            MessageBox.Show("프로세스 차단 규칙은 최대 32개입니다.", "프로세스 정책",
+            MessageBox.Show("프로세스 정책은 최대 32개입니다.", "프로세스 정책",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -235,37 +293,50 @@ public partial class MainWindow
         IntPtr rulesBuffer = IntPtr.Zero;
         try
         {
-            int ruleSize = Marshal.SizeOf<ProcessNativeMethods.RuleInput>();
+            int ruleSize = Marshal.SizeOf<ProcessNativeMethods.RuleInputV2>();
             if (ProcessRules.Count != 0)
             {
                 rulesBuffer = Marshal.AllocHGlobal(ruleSize * ProcessRules.Count);
                 for (int index = 0; index < ProcessRules.Count; ++index)
                 {
                     ProcessRuleEntry rule = ProcessRules[index];
-                    IntPtr image = Marshal.StringToHGlobalUni(rule.Image);
-                    strings.Add(image);
-                    ProcessNativeMethods.RuleInput nativeRule = new()
+                    string processName = rule.MatchMode == ProcessNativeMethods.MatchFullPath
+                        ? Path.GetFileName(rule.Image)
+                        : rule.Image;
+                    IntPtr processNamePointer = Marshal.StringToHGlobalUni(processName);
+                    strings.Add(processNamePointer);
+                    IntPtr processPathPointer = IntPtr.Zero;
+                    if (rule.MatchMode == ProcessNativeMethods.MatchFullPath)
+                    {
+                        processPathPointer = Marshal.StringToHGlobalUni(rule.Image);
+                        strings.Add(processPathPointer);
+                    }
+                    ProcessNativeMethods.RuleInputV2 nativeRule = new()
                     {
                         RuleId = rule.RuleId,
-                        MatchMode = rule.MatchMode,
-                        Image = image
+                        ProcessName = processNamePointer,
+                        ProcessPath = processPathPointer,
+                        IsSign = rule.IsSign ? (ushort)1 : (ushort)0,
+                        IsCmpFullPath = rule.MatchMode == ProcessNativeMethods.MatchFullPath
+                            ? (ushort)1
+                            : (ushort)0
                     };
                     Marshal.StructureToPtr(nativeRule,
                         IntPtr.Add(rulesBuffer, index * ruleSize), false);
                 }
             }
-            ProcessNativeMethods.PolicyInput policy = new()
+            ProcessNativeMethods.PolicyInputV2 policy = new()
             {
-                RuleCount = (uint)ProcessRules.Count,
-                Rules = rulesBuffer
+                PolicyCount = (uint)ProcessRules.Count,
+                Policies = rulesBuffer
             };
-            uint error = ProcessNativeMethods.UfProcReplacePolicy(ref policy);
+            uint error = ProcessNativeMethods.UfProcReplacePolicyV2(ref policy);
             if (error != ProcessNativeMethods.ErrorSuccess)
             {
                 ShowProcessNativeError("프로세스 정책 적용", error);
                 return;
             }
-            ProcessPolicyStatusText.Text = $"실행 차단 정책 적용됨: {ProcessRules.Count}개";
+            ProcessPolicyStatusText.Text = $"프로세스 실행 허용 정책 적용됨: {ProcessRules.Count}개";
         }
         finally
         {
@@ -294,7 +365,7 @@ public partial class MainWindow
             ShowProcessNativeError("프로세스 정책 초기화", error);
             return;
         }
-        ProcessPolicyStatusText.Text = "프로세스 차단 정책을 초기화했습니다.";
+        ProcessPolicyStatusText.Text = "프로세스 실행 허용 정책을 초기화했습니다.";
     }
 
     private void ClearProcessLog_Click(object sender, RoutedEventArgs e)
@@ -335,19 +406,29 @@ public partial class MainWindow
 
     private static void ShowProcessNativeError(string operation, uint error)
     {
+        string message = GetProcessNativeErrorMessage(error);
+        UiLogger.Error($"프로세스 네이티브 작업 실패 operation={operation} GetLastError={error} message={message}");
+        MessageBox.Show($"{operation} 실패\nGetLastError: {error}\n{message}",
+            "RansomUtilFactory", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private static string GetProcessNativeErrorMessage(uint error)
+    {
         char[] buffer = new char[512];
         uint messageError = ProcessNativeMethods.UfProcGetErrorMessage(
             error, buffer, (uint)buffer.Length);
-        string message = messageError == ProcessNativeMethods.ErrorSuccess
+        return messageError == ProcessNativeMethods.ErrorSuccess
             ? new string(buffer).TrimEnd('\0')
-            : "오류 메시지를 확인할 수 없습니다.";
-        MessageBox.Show($"{operation} 실패\n오류 코드: {error}\n{message}",
-            "RansomUtilFactory", MessageBoxButton.OK, MessageBoxImage.Error);
+            : $"오류 메시지 조회 실패(GetLastError={messageError})";
     }
 }
 
-public sealed record ProcessRuleEntry(uint RuleId, uint MatchMode, string Image)
+public sealed class ProcessRuleEntry(uint ruleId, uint matchMode, string image)
 {
+    public uint RuleId { get; } = ruleId;
+    public uint MatchMode { get; } = matchMode;
+    public string Image { get; } = image;
+    public bool IsSign { get; set; }
     public string MatchModeText => MatchMode == ProcessNativeMethods.MatchFullPath
         ? "전체 경로"
         : "파일 이름";

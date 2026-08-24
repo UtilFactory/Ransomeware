@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace RansomUtilFactory.UI;
 
@@ -17,9 +17,11 @@ internal static class ProcessNativeMethods
     {
         if (Marshal.SizeOf<RuleInput>() != 16 ||
             Marshal.SizeOf<PolicyInput>() != 16 ||
+            Marshal.SizeOf<RuleInputV2>() != 32 ||
+            Marshal.SizeOf<PolicyInputV2>() != 16 ||
             Marshal.SizeOf<MessageHeader>() != 8 ||
             Marshal.SizeOf<StateReply>() != 40 ||
-            Marshal.SizeOf<ProcessEvent>() != 600)
+            Marshal.SizeOf<ProcessEvent>() != 1120)
         {
             throw new PlatformNotSupportedException(
                 "uf_procwarp 통신 구조체의 크기가 x64 ABI와 일치하지 않습니다.");
@@ -42,6 +44,23 @@ internal static class ProcessNativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct RuleInputV2
+    {
+        internal uint RuleId;
+        internal IntPtr ProcessName;
+        internal IntPtr ProcessPath;
+        internal ushort IsSign;
+        internal ushort IsCmpFullPath;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PolicyInputV2
+    {
+        internal uint PolicyCount;
+        internal IntPtr Policies;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct MessageHeader
     {
         internal uint Version;
@@ -53,7 +72,7 @@ internal static class ProcessNativeMethods
     {
         internal MessageHeader Header;
         internal ulong PolicyGeneration;
-        internal uint RuleCount;
+        internal uint PolicyCount;
         internal uint QueueDepth;
         internal ulong DroppedEvents;
         internal uint Connected;
@@ -80,7 +99,7 @@ internal static class ProcessNativeMethods
         internal uint ImageLengthChars;
         internal uint Reserved;
 
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 520)]
         internal string Image;
     }
 
@@ -101,6 +120,15 @@ internal static class ProcessNativeMethods
 
     [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
     internal static extern uint UfProcReplacePolicy(ref PolicyInput policy);
+
+    [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfProcReplacePolicyV2(ref PolicyInputV2 policy);
+
+    [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfProcAddPolicyV2(ref PolicyInputV2 policy);
+
+    [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfProcRemovePolicyNames(IntPtr processNames, uint processNameCount);
 
     [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
     internal static extern uint UfProcClearPolicy();

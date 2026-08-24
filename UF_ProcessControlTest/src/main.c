@@ -1,4 +1,4 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +94,26 @@ SetSingleRule(
     return UfProcReplacePolicy(&policy);
 }
 
+static unsigned long
+SetMismatchedPathPolicy(
+    const wchar_t* ProcessName,
+    const wchar_t* ProcessPath
+    )
+{
+    UF_PROC_RULE_INPUT_V2 rule;
+    UF_PROC_POLICY_INPUT_V2 policy;
+
+    ZeroMemory(&rule, sizeof(rule));
+    ZeroMemory(&policy, sizeof(policy));
+    rule.RuleId = 1;
+    rule.ProcessName = ProcessName;
+    rule.ProcessPath = ProcessPath;
+    rule.IsCmpFullPath = 1;
+    policy.PolicyCount = 1;
+    policy.Policies = &rule;
+    return UfProcReplacePolicyV2(&policy);
+}
+
 static int
 RunSelfTest(
     void
@@ -102,6 +122,7 @@ RunSelfTest(
     wchar_t sourcePath[MAX_PATH];
     wchar_t probePath[MAX_PATH];
     wchar_t* fileName;
+    wchar_t* probeName;
     STARTUPINFOW startupInfo;
     PROCESS_INFORMATION processInformation;
     DWORD length;
@@ -125,14 +146,15 @@ RunSelfTest(
         fwprintf(stderr, L"시험 실행 파일 경로를 만들지 못했습니다.\n");
         return 1;
     }
+    probeName = fileName + 1;
     if (!CopyFileW(sourcePath, probePath, FALSE)) {
         PrintError(L"시험 실행 파일 복사", GetLastError());
         return 1;
     }
 
-    error = SetSingleRule(UfProcMatchFullPath, probePath);
+    error = SetMismatchedPathPolicy(probeName, sourcePath);
     if (error != ERROR_SUCCESS) {
-        PrintError(L"시험 차단 정책 등록", error);
+        PrintError(L"시험 전체 경로 불일치 정책 등록", error);
         goto Exit;
     }
     policyInstalled = 1;
@@ -152,7 +174,7 @@ RunSelfTest(
             NULL,
             &startupInfo,
             &processInformation)) {
-        fwprintf(stderr, L"차단해야 할 프로세스가 실행되었습니다.\n");
+        fwprintf(stderr, L"전체 경로가 불일치한 프로세스가 실행되었습니다.\n");
         WaitForSingleObject(processInformation.hProcess, 3000);
         CloseHandle(processInformation.hThread);
         CloseHandle(processInformation.hProcess);
@@ -161,11 +183,11 @@ RunSelfTest(
 
     error = GetLastError();
     if (error != ERROR_ACCESS_DENIED) {
-        PrintError(L"차단 결과 검증", error);
+        PrintError(L"전체 경로 불일치 차단 검증", error);
         goto Exit;
     }
     Sleep(300);
-    wprintf(L"실행 차단 자체 시험 성공: %ls (ERROR_ACCESS_DENIED)\n", probePath);
+    wprintf(L"전체 경로 불일치 차단 자체 시험 성공: %ls (ERROR_ACCESS_DENIED)\n", probePath);
     exitCode = 0;
 
 Exit:
@@ -194,8 +216,8 @@ PrintUsage(
         L"  --self-test\n"
         L"  --state\n"
         L"  --clear\n"
-        L"  --block-path <실행 파일 전체 경로>\n"
-        L"  --block-name <실행 파일 이름>\n"
+        L"  --block-path <실행 파일 전체 경로> (정책 등록 호환 명령)\n"
+        L"  --block-name <실행 파일 이름> (정책 등록 호환 명령)\n"
         L"  --listen <초>\n");
 }
 
@@ -230,7 +252,7 @@ int wmain(
             wprintf(
                 L"세대=%llu 규칙=%lu 큐=%lu 유실=%llu 연결=%lu\n",
                 state.PolicyGeneration,
-                state.RuleCount,
+                state.PolicyCount,
                 state.QueueDepth,
                 state.DroppedEvents,
                 state.Connected);
@@ -241,23 +263,23 @@ int wmain(
             PrintError(L"정책 초기화", error);
             exitCode = 1;
         } else {
-            wprintf(L"프로세스 차단 정책을 초기화했습니다.\n");
+            wprintf(L"프로세스 정책을 초기화했습니다.\n");
         }
     } else if (_wcsicmp(argv[1], L"--block-path") == 0 && argc == 3) {
         error = SetSingleRule(UfProcMatchFullPath, argv[2]);
         if (error != ERROR_SUCCESS) {
-            PrintError(L"전체 경로 차단 정책 등록", error);
+            PrintError(L"전체 경로 실행 정책 등록", error);
             exitCode = 1;
         } else {
-            wprintf(L"전체 경로 차단 정책을 등록했습니다.\n");
+            wprintf(L"전체 경로 실행 정책을 등록했습니다.\n");
         }
     } else if (_wcsicmp(argv[1], L"--block-name") == 0 && argc == 3) {
         error = SetSingleRule(UfProcMatchImageName, argv[2]);
         if (error != ERROR_SUCCESS) {
-            PrintError(L"파일 이름 차단 정책 등록", error);
+            PrintError(L"파일 이름 실행 정책 등록", error);
             exitCode = 1;
         } else {
-            wprintf(L"파일 이름 차단 정책을 등록했습니다.\n");
+            wprintf(L"파일 이름 실행 정책을 등록했습니다.\n");
         }
     } else if (_wcsicmp(argv[1], L"--listen") == 0 && argc == 3) {
         wchar_t* end = NULL;
