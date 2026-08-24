@@ -1,8 +1,10 @@
 ﻿using Microsoft.Win32;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace RansomUtilFactory.UI;
 
@@ -13,6 +15,10 @@ public partial class MainWindow
     private bool _processConnected;
     private bool _processReceiverStarted;
     private uint _nextProcessRuleId = 1;
+    private const int MaxPendingProcessEventLogs = 4000;
+    private const int ProcessEventBatchSize = 200;
+    private readonly ConcurrentQueue<ProcessEventLog> _pendingProcessEventLogs = new();
+    private int _processLogDrainScheduled;
 
     public ObservableCollection<ProcessRuleEntry> ProcessRules { get; } = [];
     public ObservableCollection<ProcessEventLog> ProcessEventLogs { get; } = [];
@@ -370,6 +376,9 @@ public partial class MainWindow
 
     private void ClearProcessLog_Click(object sender, RoutedEventArgs e)
     {
+        while (_pendingProcessEventLogs.TryDequeue(out _))
+        {
+        }
         ProcessEventLogs.Clear();
     }
 
@@ -394,14 +403,57 @@ public partial class MainWindow
             processEvent.TargetProcessId,
             $"0x{processEvent.DesiredAccess:X8}",
             processEvent.Image ?? string.Empty);
-        Dispatcher.BeginInvoke(() =>
+        _pendingProcessEventLogs.Enqueue(log);
+        while (_pendingProcessEventLogs.Count > MaxPendingProcessEventLogs &&
+               _pendingProcessEventLogs.TryDequeue(out _))
         {
-            ProcessEventLogs.Insert(0, log);
+        }
+        ScheduleProcessLogDrain();
+    }
+
+    private void ScheduleProcessLogDrain()
+    {
+        if (Interlocked.Exchange(ref _processLogDrainScheduled, 1) != 0)
+        {
+            return;
+        }
+        try
+        {
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                new Action(DrainProcessEventLogs));
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _processLogDrainScheduled, 0);
+        }
+    }
+
+    private void DrainProcessEventLogs()
+    {
+        try
+        {
+            int count = 0;
+            while (count < ProcessEventBatchSize &&
+                   _pendingProcessEventLogs.TryDequeue(out ProcessEventLog? log))
+            {
+                ProcessEventLogs.Insert(0, log);
+                ++count;
+            }
             while (ProcessEventLogs.Count > MaxLogCount)
             {
                 ProcessEventLogs.RemoveAt(ProcessEventLogs.Count - 1);
             }
-        });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _processLogDrainScheduled, 0);
+        }
+
+        if (!_pendingProcessEventLogs.IsEmpty)
+        {
+            ScheduleProcessLogDrain();
+        }
     }
 
     private static void ShowProcessNativeError(string operation, uint error)
