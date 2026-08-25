@@ -19,6 +19,7 @@ public partial class MainWindow
     private const int ProcessEventBatchSize = 200;
     private readonly ConcurrentQueue<ProcessEventLog> _pendingProcessEventLogs = new();
     private int _processLogDrainScheduled;
+    private int _processPolicyApplyRunning;
 
     public ObservableCollection<ProcessRuleEntry> ProcessRules { get; } = [];
     public ObservableCollection<ProcessEventLog> ProcessEventLogs { get; } = [];
@@ -280,7 +281,7 @@ public partial class MainWindow
         }
     }
 
-    private void ApplyProcessPolicy_Click(object sender, RoutedEventArgs e)
+    private async void ApplyProcessPolicy_Click(object sender, RoutedEventArgs e)
     {
         if (!_processConnected)
         {
@@ -288,13 +289,20 @@ public partial class MainWindow
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        if (Interlocked.Exchange(ref _processPolicyApplyRunning, 1) != 0)
+        {
+            return;
+        }
         if (ProcessRules.Count > 32)
         {
+            Interlocked.Exchange(ref _processPolicyApplyRunning, 0);
             MessageBox.Show("프로세스 정책은 최대 32개입니다.", "프로세스 정책",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
+        ApplyProcessPolicyButton.IsEnabled = false;
+        ProcessPolicyStatusText.Text = "프로세스 정책 적용 중...";
         List<IntPtr> strings = [];
         IntPtr rulesBuffer = IntPtr.Zero;
         try
@@ -336,7 +344,8 @@ public partial class MainWindow
                 PolicyCount = (uint)ProcessRules.Count,
                 Policies = rulesBuffer
             };
-            uint error = ProcessNativeMethods.UfProcReplacePolicyV2(ref policy);
+            uint error = await Task.Run(() =>
+                ProcessNativeMethods.UfProcReplacePolicyV2(ref policy));
             if (error != ProcessNativeMethods.ErrorSuccess)
             {
                 ShowProcessNativeError("프로세스 정책 적용", error);
@@ -354,6 +363,8 @@ public partial class MainWindow
             {
                 Marshal.FreeHGlobal(rulesBuffer);
             }
+            ApplyProcessPolicyButton.IsEnabled = true;
+            Interlocked.Exchange(ref _processPolicyApplyRunning, 0);
         }
     }
 
