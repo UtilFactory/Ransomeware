@@ -504,7 +504,12 @@ UfReplacePolicy(
     InitializeListHead(&oldList);
 
     KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&gUfProcessDriverContext.PolicyLock);
+    /* 정책 교체에서 락을 무기한 기다리면 사용자 모드 요청도 반환되지 않는다. */
+    if (!ExTryAcquirePushLockExclusive(&gUfProcessDriverContext.PolicyLock)) {
+        KeLeaveCriticalRegion();
+        UfFreePolicyList(&newList);
+        return STATUS_DEVICE_BUSY;
+    }
 
     while (!IsListEmpty(&gUfProcessDriverContext.PolicyListHead)) {
         PLIST_ENTRY entry = RemoveHeadList(&gUfProcessDriverContext.PolicyListHead);
