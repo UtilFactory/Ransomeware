@@ -826,6 +826,11 @@ UfQueryState(
     RtlZeroMemory(reply, sizeof(*reply));
     reply->Header.Version = UF_PROC_PROTOCOL_VERSION;
     reply->Header.Size = sizeof(*reply);
+    reply->Reserved = UF_PROC_POLICY_DIAGNOSTIC_MAGIC |
+        (ULONG)InterlockedCompareExchange(
+            &gUfProcessDriverContext.PolicyReplaceStage,
+            0,
+            0);
     reply->PolicyGeneration = (ULONGLONG)InterlockedCompareExchange64(
         &gUfProcessDriverContext.PolicyGeneration,
         0,
@@ -840,13 +845,9 @@ UfQueryState(
         ExReleasePushLockShared(&gUfProcessDriverContext.PolicyLock);
     } else {
         /* 정책 교체가 잠긴 동안에도 진단 단계는 조회할 수 있어야 합니다. */
-        reply->Reserved = 0x80000000u;
+        reply->Reserved |= 0x80000000u;
     }
     KeLeaveCriticalRegion();
-    reply->Reserved |= (ULONG)InterlockedCompareExchange(
-        &gUfProcessDriverContext.PolicyReplaceStage,
-        0,
-        0);
 
     KeAcquireSpinLock(&gUfProcessDriverContext.EventLock, &oldIrql);
     reply->QueueDepth = gUfProcessDriverContext.EventCount;

@@ -249,7 +249,9 @@ public partial class MainWindow
         error = ProcessNativeMethods.UfProcQueryState(ref state);
         if (error == ProcessNativeMethods.ErrorSuccess)
         {
-            string detail = $"정책 세대 {state.PolicyGeneration} · 정책 {state.PolicyCount}개";
+            bool diagnosticDriver = (state.Reserved & 0x7f000000u) == 0x55000000u;
+            string detail = $"정책 세대 {state.PolicyGeneration} · 정책 {state.PolicyCount}개" +
+                (diagnosticDriver ? " · 진단 드라이버" : " · 구버전 드라이버");
             ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결됨 · {detail}";
             SetProcessConnectionState(true, detail);
         }
@@ -357,10 +359,14 @@ public partial class MainWindow
                         ProcessNativeMethods.UfProcQueryState(ref diagnosticState));
                     if (diagnosticError == ProcessNativeMethods.ErrorSuccess)
                     {
+                        bool diagnosticDriver =
+                            (diagnosticState.Reserved & 0x7f000000u) == 0x55000000u;
+                        uint stage = diagnosticState.Reserved & 0xffu;
                         UiLogger.Info($"프로세스 정책 적용 진단 stage={diagnosticState.Reserved} " +
-                            $"generation={diagnosticState.PolicyGeneration}");
+                            $"generation={diagnosticState.PolicyGeneration} diagnostic={diagnosticDriver}");
                         ProcessPolicyStatusText.Text =
-                            $"프로세스 정책 적용 중... (커널 단계 {diagnosticState.Reserved & 0x7fffffff})";
+                            $"프로세스 정책 적용 중... (커널 단계 {stage}, " +
+                            $"{(diagnosticDriver ? "진단 드라이버" : "구버전 드라이버")})";
                     }
                 }
             }
