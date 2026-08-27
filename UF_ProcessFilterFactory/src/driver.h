@@ -76,6 +76,7 @@ typedef struct _UF_PROCESS_DRIVER_CONTEXT {
     LIST_ENTRY PolicyListHead;
     LIST_ENTRY OrphanProcList;
     volatile LONG64 PolicyGeneration;
+    volatile LONG PolicyCount;
     volatile LONG PolicyReplaceStage;
     KSPIN_LOCK EventLock;
     PUF_PROC_EVENT EventQueue;

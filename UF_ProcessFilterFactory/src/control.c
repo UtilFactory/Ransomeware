@@ -590,6 +590,16 @@ UfReplacePolicy(
     UfMoveOrphanProcessesToPoliciesLocked();
     InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
         UF_PROC_POLICY_STAGE_ORPHANS_MOVED);
+    {
+        LONG policyCount = 0;
+        PLIST_ENTRY policyEntry;
+        for (policyEntry = gUfProcessDriverContext.PolicyListHead.Flink;
+             policyEntry != &gUfProcessDriverContext.PolicyListHead;
+             policyEntry = policyEntry->Flink) {
+            ++policyCount;
+        }
+        InterlockedExchange(&gUfProcessDriverContext.PolicyCount, policyCount);
+    }
     InterlockedIncrement64(&gUfProcessDriverContext.PolicyGeneration);
 
     KdPrintEx((
@@ -601,6 +611,11 @@ UfReplacePolicy(
     KeLeaveCriticalRegion();
     InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
         UF_PROC_POLICY_STAGE_UNLOCKED);
+
+    /* 상태 조회는 정책 락을 잡지 않으므로 원자 카운터를 갱신합니다. */
+    InterlockedExchange(
+        &gUfProcessDriverContext.PolicyCount,
+        (LONG)Request->PolicyCount);
 
     while (!IsListEmpty(&oldList)) {
         PLIST_ENTRY entry = RemoveHeadList(&oldList);
@@ -675,6 +690,16 @@ UfAddPolicy(
             }
         }
     }
+    {
+        LONG policyCount = 0;
+        PLIST_ENTRY policyEntry;
+        for (policyEntry = gUfProcessDriverContext.PolicyListHead.Flink;
+             policyEntry != &gUfProcessDriverContext.PolicyListHead;
+             policyEntry = policyEntry->Flink) {
+            ++policyCount;
+        }
+        InterlockedExchange(&gUfProcessDriverContext.PolicyCount, policyCount);
+    }
     InterlockedIncrement64(&gUfProcessDriverContext.PolicyGeneration);
     ExReleasePushLockExclusive(&gUfProcessDriverContext.PolicyLock);
     KeLeaveCriticalRegion();
@@ -731,6 +756,7 @@ UfClearPolicy(
     KeLeaveCriticalRegion();
 
     UfFreePolicyList(&retiredList);
+    InterlockedExchange(&gUfProcessDriverContext.PolicyCount, 0);
     return STATUS_SUCCESS;
 }
 
@@ -800,6 +826,16 @@ UfRemovePolicy(
             }
         }
     }
+    {
+        LONG policyCount = 0;
+        PLIST_ENTRY policyEntry;
+        for (policyEntry = gUfProcessDriverContext.PolicyListHead.Flink;
+             policyEntry != &gUfProcessDriverContext.PolicyListHead;
+             policyEntry = policyEntry->Flink) {
+            ++policyCount;
+        }
+        InterlockedExchange(&gUfProcessDriverContext.PolicyCount, policyCount);
+    }
     InterlockedIncrement64(&gUfProcessDriverContext.PolicyGeneration);
     ExReleasePushLockExclusive(&gUfProcessDriverContext.PolicyLock);
     KeLeaveCriticalRegion();
@@ -816,9 +852,6 @@ UfQueryState(
     )
 {
     PUF_PROC_STATE_REPLY reply;
-    KIRQL oldIrql;
-    PLIST_ENTRY entry;
-
     if (Output == NULL || OutputLength < sizeof(UF_PROC_STATE_REPLY)) {
         return STATUS_BUFFER_TOO_SMALL;
     }
@@ -835,23 +868,15 @@ UfQueryState(
         &gUfProcessDriverContext.PolicyGeneration,
         0,
         0);
-    KeEnterCriticalRegion();
-    if (ExTryAcquirePushLockShared(&gUfProcessDriverContext.PolicyLock)) {
-        for (entry = gUfProcessDriverContext.PolicyListHead.Flink;
-             entry != &gUfProcessDriverContext.PolicyListHead;
-             entry = entry->Flink) {
-            ++reply->PolicyCount;
-        }
-        ExReleasePushLockShared(&gUfProcessDriverContext.PolicyLock);
-    } else {
-        /* 정책 교체가 잠긴 동안에도 진단 단계는 조회할 수 있어야 합니다. */
-        reply->Reserved |= 0x80000000u;
-    }
-    KeLeaveCriticalRegion();
-
-    KeAcquireSpinLock(&gUfProcessDriverContext.EventLock, &oldIrql);
-    reply->QueueDepth = gUfProcessDriverContext.EventCount;
-    KeReleaseSpinLock(&gUfProcessDriverContext.EventLock, oldIrql);
+    /* 진단 상태 조회는 정책/이벤트 락을 절대 획득하지 않습니다. */
+    reply->PolicyCount = (ULONG)InterlockedCompareExchange(
+        &gUfProcessDriverContext.PolicyCount,
+        0,
+        0);
+    reply->QueueDepth = (ULONG)InterlockedCompareExchange(
+        (volatile LONG*)&gUfProcessDriverContext.EventCount,
+        0,
+        0);
     reply->DroppedEvents = (ULONGLONG)InterlockedCompareExchange64(
         &gUfProcessDriverContext.DroppedEvents,
         0,
