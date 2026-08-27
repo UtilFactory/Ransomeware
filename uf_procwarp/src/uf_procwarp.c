@@ -682,7 +682,7 @@ UfProcOpenDevice(
     device = CreateFileW(
         UF_PROC_DEVICE_WIN32_NAME,
         GENERIC_READ | GENERIC_WRITE,
-        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | Flags,
@@ -700,7 +700,7 @@ UfProcOpenDevice(
     return CreateFileW(
         UF_PROC_DEVICE_WIN32_GLOBAL_NAME,
         GENERIC_READ | GENERIC_WRITE,
-        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | Flags,
