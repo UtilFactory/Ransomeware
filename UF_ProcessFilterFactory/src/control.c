@@ -863,7 +863,13 @@ UfQueryState(
         (ULONG)InterlockedCompareExchange(
             &gUfProcessDriverContext.PolicyReplaceStage,
             0,
-            0);
+            0) |
+        (UF_PROC_POLICY_DIAGNOSTIC_VERSION <<
+            UF_PROC_POLICY_DIAGNOSTIC_VERSION_SHIFT) |
+        (((ULONG)InterlockedCompareExchange(
+            &gUfProcessDriverContext.ClientOpenCount,
+            0,
+            0) & 0xffu) << UF_PROC_POLICY_DIAGNOSTIC_OPEN_COUNT_SHIFT);
     reply->PolicyGeneration = (ULONGLONG)InterlockedCompareExchange64(
         &gUfProcessDriverContext.PolicyGeneration,
         0,
