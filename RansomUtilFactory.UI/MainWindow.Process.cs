@@ -344,8 +344,10 @@ public partial class MainWindow
                 PolicyCount = (uint)ProcessRules.Count,
                 Policies = rulesBuffer
             };
+            UiLogger.Info($"프로세스 정책 네이티브 호출 시작 count={policy.PolicyCount}");
             uint error = await Task.Run(() =>
                 ProcessNativeMethods.UfProcReplacePolicyV2(ref policy));
+            UiLogger.Info($"프로세스 정책 네이티브 호출 완료 GetLastError={error}");
             if (error != ProcessNativeMethods.ErrorSuccess)
             {
                 ShowProcessNativeError("프로세스 정책 적용", error);

@@ -493,14 +493,35 @@ UfReplacePolicy(
     NTSTATUS status;
     PUF_PROC_POLICY oldPolicy;
 
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy enter count=%lu\n",
+        Request != NULL ? Request->PolicyCount : 0));
+
     status = UfValidatePolicySet(Request);
     if (!NT_SUCCESS(status)) {
+        KdPrintEx((
+            DPFLTR_IHVDRIVER_ID,
+            DPFLTR_WARNING_LEVEL,
+            "[UF_ProcessFilterFactory] replace-policy validate-failed status=0x%08X\n",
+            status));
         return status;
     }
     status = UfBuildPolicyList(Request, &newList);
     if (!NT_SUCCESS(status)) {
+        KdPrintEx((
+            DPFLTR_IHVDRIVER_ID,
+            DPFLTR_ERROR_LEVEL,
+            "[UF_ProcessFilterFactory] replace-policy build-failed status=0x%08X\n",
+            status));
         return status;
     }
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy built count=%lu\n",
+        Request->PolicyCount));
     InitializeListHead(&oldList);
 
     KeEnterCriticalRegion();
@@ -508,13 +529,25 @@ UfReplacePolicy(
     if (!ExTryAcquirePushLockExclusive(&gUfProcessDriverContext.PolicyLock)) {
         KeLeaveCriticalRegion();
         UfFreePolicyList(&newList);
+        KdPrintEx((
+            DPFLTR_IHVDRIVER_ID,
+            DPFLTR_WARNING_LEVEL,
+            "[UF_ProcessFilterFactory] replace-policy lock-busy\n"));
         return STATUS_DEVICE_BUSY;
     }
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy lock-acquired\n"));
 
     while (!IsListEmpty(&gUfProcessDriverContext.PolicyListHead)) {
         PLIST_ENTRY entry = RemoveHeadList(&gUfProcessDriverContext.PolicyListHead);
         InsertTailList(&oldList, entry);
     }
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy lists-swapped\n"));
     while (!IsListEmpty(&newList)) {
         PLIST_ENTRY entry = RemoveHeadList(&newList);
         InsertTailList(&gUfProcessDriverContext.PolicyListHead, entry);
@@ -543,6 +576,11 @@ UfReplacePolicy(
     UfMoveOrphanProcessesToPoliciesLocked();
     InterlockedIncrement64(&gUfProcessDriverContext.PolicyGeneration);
 
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy unlock\n"));
+
     ExReleasePushLockExclusive(&gUfProcessDriverContext.PolicyLock);
     KeLeaveCriticalRegion();
 
@@ -551,6 +589,10 @@ UfReplacePolicy(
         oldPolicy = CONTAINING_RECORD(entry, UF_PROC_POLICY, PolicyListEntry);
         UfDestroyPolicy(oldPolicy);
     }
+    KdPrintEx((
+        DPFLTR_IHVDRIVER_ID,
+        DPFLTR_INFO_LEVEL,
+        "[UF_ProcessFilterFactory] replace-policy complete\n"));
     return STATUS_SUCCESS;
 }
 
