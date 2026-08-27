@@ -806,6 +806,7 @@ UfProcQueryState(
     UF_PROC_STATE_REPLY* State
     )
 {
+    HANDLE device;
     unsigned long bytesReturned = 0;
     unsigned long result;
 
@@ -813,13 +814,24 @@ UfProcQueryState(
         return ERROR_INVALID_PARAMETER;
     }
     ZeroMemory(State, sizeof(*State));
-    result = UfProcSendIoctl(
+    /*
+     * 진단 조회는 정책 적용 요청과 사용자 모드 SRW 락을 공유하지 않습니다.
+     * 적용 IOCTL이 반환되지 않아도 동일 디바이스의 QUERY_STATE를 직접 보내
+     * 커널 디스패치/락 교착 여부를 분리해서 확인할 수 있어야 합니다.
+     */
+    device = gDevice;
+    if (device == INVALID_HANDLE_VALUE) {
+        return ERROR_INVALID_HANDLE;
+    }
+    result = DeviceIoControl(
+        device,
         UF_PROC_IOCTL_QUERY_STATE,
         NULL,
         0,
         State,
         sizeof(*State),
-        &bytesReturned);
+        &bytesReturned,
+        NULL) ? ERROR_SUCCESS : GetLastError();
     if (result != ERROR_SUCCESS) {
         return result;
     }
