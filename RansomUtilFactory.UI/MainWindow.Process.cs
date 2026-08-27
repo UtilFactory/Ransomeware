@@ -355,6 +355,7 @@ public partial class MainWindow
                 await Task.Delay(500);
                 if (!applyTask.IsCompleted && !diagnosticQueryTimedOut)
                 {
+                    uint nativeStage = ProcessNativeMethods.UfProcGetPolicyCallStage();
                     ProcessNativeMethods.StateReply diagnosticState = new();
                     Task<uint> diagnosticTask = Task.Run(() =>
                         ProcessNativeMethods.UfProcQueryState(ref diagnosticState));
@@ -364,9 +365,9 @@ public partial class MainWindow
                     if (completedTask != diagnosticTask)
                     {
                         diagnosticQueryTimedOut = true;
-                        UiLogger.Warn("프로세스 정책 적용 진단 상태 조회 시간 초과");
+                        UiLogger.Warn($"프로세스 정책 적용 진단 상태 조회 시간 초과 nativeStage={nativeStage}");
                         ProcessPolicyStatusText.Text =
-                            "프로세스 정책 적용 중... (상태 조회 응답 없음)";
+                            $"프로세스 정책 적용 중... (상태 조회 응답 없음, 사용자 단계 {nativeStage})";
                         continue;
                     }
                     uint diagnosticError = await diagnosticTask;

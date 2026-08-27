@@ -148,4 +148,7 @@ internal static class ProcessNativeMethods
         uint errorCode,
         [Out] char[] message,
         uint messageChars);
+
+    [DllImport("uf_procwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfProcGetPolicyCallStage();
 }

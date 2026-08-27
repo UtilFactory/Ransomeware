@@ -17,6 +17,7 @@ static HANDLE gReceiverThread = NULL;
 static HANDLE gSignatureThread = NULL;
 static UF_PROC_EVENT_CALLBACK gCallback = NULL;
 static void* gCallbackContext = NULL;
+static volatile LONG gPolicyCallStage = 0;
 
 static const wchar_t* const gCriticalNames[] = {
     L"smss.exe",
@@ -671,6 +672,8 @@ UfProcSendPolicyV2(
     unsigned long index;
     unsigned long result = ERROR_SUCCESS;
 
+    InterlockedExchange(&gPolicyCallStage, 1);
+
     if (Policy == NULL || Policy->PolicyCount > UF_PROC_MAX_POLICIES ||
         (Policy->PolicyCount != 0 && Policy->Policies == NULL)) {
         return ERROR_INVALID_PARAMETER;
@@ -691,6 +694,7 @@ UfProcSendPolicyV2(
             goto Exit;
         }
     }
+    InterlockedExchange(&gPolicyCallStage, 2);
     result = UfProcSendIoctl(
         ControlCode,
         request,
@@ -698,10 +702,19 @@ UfProcSendPolicyV2(
         NULL,
         0,
         NULL);
+    InterlockedExchange(&gPolicyCallStage, result == ERROR_SUCCESS ? 3 : 4);
 Exit:
     SecureZeroMemory(request, sizeof(*request));
     HeapFree(GetProcessHeap(), 0, request);
     return result;
+}
+
+unsigned long __stdcall
+UfProcGetPolicyCallStage(
+    void
+    )
+{
+    return (unsigned long)InterlockedCompareExchange(&gPolicyCallStage, 0, 0);
 }
 
 unsigned long __stdcall

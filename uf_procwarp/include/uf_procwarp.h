@@ -67,6 +67,7 @@ UF_PROCWARP_API unsigned long __stdcall UfProcGetErrorMessage(
     unsigned long ErrorCode,
     wchar_t* Message,
     unsigned long MessageChars);
+UF_PROCWARP_API unsigned long __stdcall UfProcGetPolicyCallStage(void);
 
 #ifdef __cplusplus
 }
