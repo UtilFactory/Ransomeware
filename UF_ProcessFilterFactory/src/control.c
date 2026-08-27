@@ -1015,14 +1015,11 @@ UfDispatchCreate(
 
     UNREFERENCED_PARAMETER(DeviceObject);
     stack = IoGetCurrentIrpStackLocation(Irp);
-    if (InterlockedCompareExchange(
-            &gUfProcessDriverContext.ClientConnected,
-            1,
-            0) != 0) {
-        return UfCompleteIrp(Irp, STATUS_SHARING_VIOLATION, 0);
+    if (InterlockedIncrement(&gUfProcessDriverContext.ClientOpenCount) == 1) {
+        InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 1);
+        UfResetEventQueue();
     }
     stack->FileObject->FsContext = (PVOID)(ULONG_PTR)1;
-    UfResetEventQueue();
     return UfCompleteIrp(Irp, STATUS_SUCCESS, 0);
 }
 
@@ -1039,8 +1036,10 @@ UfDispatchClose(
     if (stack->FileObject->FsContext != NULL) {
         stack->FileObject->FsContext = NULL;
         UfCancelSignatureWait(STATUS_CANCELLED);
-        InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 0);
-        UfResetEventQueue();
+        if (InterlockedDecrement(&gUfProcessDriverContext.ClientOpenCount) == 0) {
+            InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 0);
+            UfResetEventQueue();
+        }
     }
     return UfCompleteIrp(Irp, STATUS_SUCCESS, 0);
 }

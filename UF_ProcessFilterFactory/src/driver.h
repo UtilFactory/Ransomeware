@@ -85,6 +85,7 @@ typedef struct _UF_PROCESS_DRIVER_CONTEXT {
     ULONG EventCount;
     volatile LONG64 EventSequence;
     volatile LONG64 DroppedEvents;
+    volatile LONG ClientOpenCount;
     volatile LONG ClientConnected;
     KSPIN_LOCK SignatureLock;
     PIRP SignatureWaitIrp;

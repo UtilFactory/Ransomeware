@@ -13,6 +13,7 @@
 
 static SRWLOCK gLock = SRWLOCK_INIT;
 static HANDLE gDevice = INVALID_HANDLE_VALUE;
+static HANDLE gSignatureDevice = INVALID_HANDLE_VALUE;
 static HANDLE gStopEvent = NULL;
 static HANDLE gReceiverThread = NULL;
 static HANDLE gSignatureThread = NULL;
@@ -306,7 +307,8 @@ UfProcBuildPolicyRuleV2(
 }
 
 static unsigned long
-UfProcSendIoctl(
+UfProcSendIoctlToDevice(
+    HANDLE device,
     unsigned long ControlCode,
     void* Input,
     unsigned long InputSize,
@@ -315,15 +317,11 @@ UfProcSendIoctl(
     unsigned long* BytesReturned
     )
 {
-    HANDLE device;
     DWORD returned = 0;
     BOOL succeeded;
     unsigned long result;
 
-    AcquireSRWLockShared(&gLock);
-    device = gDevice;
     if (device == INVALID_HANDLE_VALUE) {
-        ReleaseSRWLockShared(&gLock);
         UfProcNativeLog(L"ioctl skipped code=0x%08lX reason=invalid-device", ControlCode);
         return ERROR_INVALID_HANDLE;
     }
@@ -347,11 +345,63 @@ UfProcSendIoctl(
         ControlCode,
         result,
         returned);
-    ReleaseSRWLockShared(&gLock);
-
     if (BytesReturned != NULL) {
         *BytesReturned = returned;
     }
+    return result;
+}
+
+static unsigned long
+UfProcSendIoctl(
+    unsigned long ControlCode,
+    void* Input,
+    unsigned long InputSize,
+    void* Output,
+    unsigned long OutputSize,
+    unsigned long* BytesReturned
+    )
+{
+    HANDLE device;
+    unsigned long result;
+
+    AcquireSRWLockShared(&gLock);
+    device = gDevice;
+    result = UfProcSendIoctlToDevice(
+        device,
+        ControlCode,
+        Input,
+        InputSize,
+        Output,
+        OutputSize,
+        BytesReturned);
+    ReleaseSRWLockShared(&gLock);
+    return result;
+}
+
+static unsigned long
+UfProcSendSignatureIoctl(
+    unsigned long ControlCode,
+    void* Input,
+    unsigned long InputSize,
+    void* Output,
+    unsigned long OutputSize,
+    unsigned long* BytesReturned
+    )
+{
+    HANDLE device;
+    unsigned long result;
+
+    AcquireSRWLockShared(&gLock);
+    device = gSignatureDevice;
+    result = UfProcSendIoctlToDevice(
+        device,
+        ControlCode,
+        Input,
+        InputSize,
+        Output,
+        OutputSize,
+        BytesReturned);
+    ReleaseSRWLockShared(&gLock);
     return result;
 }
 
@@ -497,7 +547,7 @@ UfProcSignatureMain(
             break;
         }
         ZeroMemory(&signatureRequest, sizeof(signatureRequest));
-        result = UfProcSendIoctl(
+        result = UfProcSendSignatureIoctl(
             UF_PROC_IOCTL_WAIT_SIGNATURE,
             &waitRequest,
             sizeof(waitRequest),
@@ -523,7 +573,7 @@ UfProcSignatureMain(
         response.Decision = UfProcVerifyImageSignature(&signatureRequest) != 0
             ? UfProcSignatureAllow
             : UfProcSignatureDeny;
-        (void)UfProcSendIoctl(
+        (void)UfProcSendSignatureIoctl(
             UF_PROC_IOCTL_COMPLETE_SIGNATURE,
             &response,
             sizeof(response),
@@ -623,7 +673,7 @@ UfProcShutdown(
 
 static HANDLE
 UfProcOpenDevice(
-    void
+    DWORD Flags
     )
 {
     HANDLE device;
@@ -635,7 +685,7 @@ UfProcOpenDevice(
         0,
         NULL,
         OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NORMAL | Flags,
         NULL);
     if (device != INVALID_HANDLE_VALUE) {
         return device;
@@ -653,7 +703,7 @@ UfProcOpenDevice(
         0,
         NULL,
         OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NORMAL | Flags,
         NULL);
 }
 
@@ -671,7 +721,7 @@ UfProcConnect(
         UfProcNativeLog(L"connect already-connected");
         return ERROR_ALREADY_EXISTS;
     }
-    device = UfProcOpenDevice();
+    device = UfProcOpenDevice(0);
     if (device == INVALID_HANDLE_VALUE) {
         unsigned long result = GetLastError();
         ReleaseSRWLockExclusive(&gLock);
@@ -991,6 +1041,7 @@ UfProcStartEventReceiver(
     HANDLE stopEvent;
     HANDLE thread;
     HANDLE signatureThread;
+    HANDLE signatureDevice;
 
     if (Callback == NULL) {
         return ERROR_INVALID_PARAMETER;
@@ -1004,9 +1055,24 @@ UfProcStartEventReceiver(
         ReleaseSRWLockExclusive(&gLock);
         return ERROR_ALREADY_EXISTS;
     }
+    if (gSignatureDevice == INVALID_HANDLE_VALUE) {
+        signatureDevice = UfProcOpenDevice(0);
+        if (signatureDevice == INVALID_HANDLE_VALUE) {
+            unsigned long result = GetLastError();
+            ReleaseSRWLockExclusive(&gLock);
+            UfProcNativeLog(L"event-receiver signature-open-failed error=%lu", result);
+            return result;
+        }
+        gSignatureDevice = signatureDevice;
+    }
     stopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (stopEvent == NULL) {
         unsigned long result = GetLastError();
+        signatureDevice = gSignatureDevice;
+        gSignatureDevice = INVALID_HANDLE_VALUE;
+        if (signatureDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(signatureDevice);
+        }
         ReleaseSRWLockExclusive(&gLock);
         return result;
     }
@@ -1017,6 +1083,11 @@ UfProcStartEventReceiver(
     if (thread == NULL) {
         unsigned long result = GetLastError();
         CloseHandle(stopEvent);
+        signatureDevice = gSignatureDevice;
+        gSignatureDevice = INVALID_HANDLE_VALUE;
+        if (signatureDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(signatureDevice);
+        }
         gStopEvent = NULL;
         gCallback = NULL;
         gCallbackContext = NULL;
@@ -1027,10 +1098,15 @@ UfProcStartEventReceiver(
     if (signatureThread == NULL) {
         unsigned long result = GetLastError();
         SetEvent(stopEvent);
+        signatureDevice = gSignatureDevice;
+        gSignatureDevice = INVALID_HANDLE_VALUE;
         ReleaseSRWLockExclusive(&gLock);
         WaitForSingleObject(thread, INFINITE);
         CloseHandle(thread);
         CloseHandle(stopEvent);
+        if (signatureDevice != INVALID_HANDLE_VALUE) {
+            CloseHandle(signatureDevice);
+        }
         AcquireSRWLockExclusive(&gLock);
         gStopEvent = NULL;
         gCallback = NULL;
@@ -1052,17 +1128,30 @@ UfProcStopEventReceiver(
     HANDLE thread;
     HANDLE signatureThread;
     HANDLE stopEvent;
+    HANDLE signatureDevice;
 
     AcquireSRWLockExclusive(&gLock);
     thread = gReceiverThread;
     signatureThread = gSignatureThread;
     stopEvent = gStopEvent;
+    signatureDevice = gSignatureDevice;
+    gSignatureDevice = INVALID_HANDLE_VALUE;
     if (thread == NULL && signatureThread == NULL) {
         ReleaseSRWLockExclusive(&gLock);
+        if (signatureDevice != INVALID_HANDLE_VALUE) {
+            (void)CancelIoEx(signatureDevice, NULL);
+            CloseHandle(signatureDevice);
+        }
         return;
     }
     SetEvent(stopEvent);
     ReleaseSRWLockExclusive(&gLock);
+
+    /* 별도 핸들이므로 대기 중인 서명 IOCTL만 취소합니다. */
+    if (signatureDevice != INVALID_HANDLE_VALUE) {
+        (void)CancelIoEx(signatureDevice, NULL);
+        CloseHandle(signatureDevice);
+    }
 
     WaitForSingleObject(thread, INFINITE);
     if (signatureThread != NULL) {
