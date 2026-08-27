@@ -198,17 +198,22 @@ public partial class MainWindow : Window
 
     private static void ShowDriverOperationResult(string title, DriverOperationResult result)
     {
+        string lastError = result.LastError?.ToString() ?? "없음";
         if (result.Success)
         {
-            UiLogger.Info($"{title} 성공 message={result.Message}");
+            UiLogger.Info($"{title} 성공 message={result.Message} GetLastError={lastError}");
         }
         else
         {
-            UiLogger.Error($"{title} 실패 message={result.Message}");
+            UiLogger.Error($"{title} 실패 GetLastError={lastError} message={result.Message}");
         }
         string message = result.RebootRequired
             ? $"{result.Message}\n작업을 완료하려면 Windows를 다시 시작해야 합니다."
             : result.Message;
+        if (!result.Success && result.LastError.HasValue)
+        {
+            message += $"\nGetLastError: {result.LastError.Value}";
+        }
         MessageBox.Show(message, title, MessageBoxButton.OK,
             result.Success ? MessageBoxImage.Information : MessageBoxImage.Error);
     }
@@ -240,7 +245,7 @@ public partial class MainWindow : Window
         UiLogger.Info($"드라이버 통신 연결 호출 완료 error={error}");
         if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
         {
-            UiLogger.Warn($"드라이버 통신 연결 실패 error={error}");
+            UiLogger.Warn($"파일 필터 통신 연결 실패 GetLastError={error} message={GetFileNativeErrorMessage(error)}");
             SetConnectionState(false);
             if (showFailure)
             {
@@ -322,8 +327,17 @@ public partial class MainWindow : Window
 
     private void SetConnectionState(bool connected)
     {
-        ConnectionText.Text = connected ? "드라이버 연결됨" : "드라이버 연결 안 됨";
-        ConnectionIndicator.Fill = new SolidColorBrush(
+        FileDriverConnectionText.Text = connected ? "파일 필터: 연결됨" : "파일 필터: 연결 안 됨";
+        FileDriverConnectionIndicator.Fill = new SolidColorBrush(
+            connected ? Color.FromRgb(22, 163, 74) : Color.FromRgb(179, 38, 30));
+    }
+
+    private void SetProcessConnectionState(bool connected, string? detail = null)
+    {
+        ProcessDriverConnectionText.Text = connected
+            ? $"프로세스 제어 필터: 연결됨{(string.IsNullOrWhiteSpace(detail) ? string.Empty : $" ({detail})")}"
+            : $"프로세스 제어 필터: 연결 안 됨{(string.IsNullOrWhiteSpace(detail) ? string.Empty : $" ({detail})")}";
+        ProcessDriverConnectionIndicator.Fill = new SolidColorBrush(
             connected ? Color.FromRgb(22, 163, 74) : Color.FromRgb(179, 38, 30));
     }
 
@@ -893,18 +907,19 @@ public partial class MainWindow : Window
 
     private void ShowNativeError(string operation, uint error)
     {
-        UiLogger.Error($"네이티브 작업 실패 operation={operation} error={error}");
-        char[] buffer = new char[512];
-        uint messageResult = NativeMethods.UfFltGetErrorMessage(error, buffer, (uint)buffer.Length);
-        string message = messageResult == NativeMethods.ErrorSuccess
-            ? new string(buffer).TrimEnd('\0')
-            : "오류 메시지를 확인할 수 없습니다.";
-        if (messageResult != NativeMethods.ErrorSuccess)
-        {
-            UiLogger.Warn($"네이티브 오류 메시지 조회 실패 operation={operation} error={error} messageError={messageResult}");
-        }
-        MessageBox.Show($"{operation} 실패\n오류 코드: {error}\n{message}",
+        string message = GetFileNativeErrorMessage(error);
+        UiLogger.Error($"네이티브 작업 실패 operation={operation} GetLastError={error} message={message}");
+        MessageBox.Show($"{operation} 실패\nGetLastError: {error}\n{message}",
             "RansomUtilFactory", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private static string GetFileNativeErrorMessage(uint error)
+    {
+        char[] buffer = new char[512];
+        uint result = NativeMethods.UfFltGetErrorMessage(error, buffer, (uint)buffer.Length);
+        return result == NativeMethods.ErrorSuccess
+            ? new string(buffer).TrimEnd('\0')
+            : $"오류 메시지 조회 실패(GetLastError={result})";
     }
 }
 

@@ -61,13 +61,13 @@ internal static class DriverInstaller
         {
             int error = Marshal.GetLastWin32Error();
             UiLogger.Error($"DiInstallDriverW 실패 error={error}");
-            return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired);
+            return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired, error);
         }
 
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
             UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
-            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", rebootRequired);
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", rebootRequired, privilegeError);
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
@@ -88,7 +88,7 @@ internal static class DriverInstaller
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
             UiLogger.Error($"SeLoadDriverPrivilege 활성화 실패 error={privilegeError}");
-            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+            return new(false, $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false, privilegeError);
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
@@ -97,7 +97,7 @@ internal static class DriverInstaller
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
         {
-            return new(false, $"설치된 미니필터를 로드하지 못했습니다: {FormatError(loadError)}", false);
+            return new(false, $"설치된 미니필터를 로드하지 못했습니다: {FormatError(loadError)}", false, loadError);
         }
 
         string message = loadError == ErrorAlreadyExists ||
@@ -113,7 +113,7 @@ internal static class DriverInstaller
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
             UiLogger.Error($"드라이버 언로드 권한 활성화 실패 error={privilegeError}");
-            return new(false, $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+            return new(false, $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false, privilegeError);
         }
         int unloadResult = FilterUnload(FileDriverServiceName);
         int unloadError = HResultToWin32(unloadResult);
@@ -121,7 +121,7 @@ internal static class DriverInstaller
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
         {
             UiLogger.Error($"미니필터 언로드 실패 error={unloadError}");
-            return new(false, $"미니필터 언로드 실패: {FormatError(unloadError)}", false);
+            return new(false, $"미니필터 언로드 실패: {FormatError(unloadError)}", false, unloadError);
         }
 
         string? infPath = FindFileDriverInf();
@@ -141,7 +141,7 @@ internal static class DriverInstaller
                 return new(true, "설치된 파일 드라이버가 없습니다.", false);
             }
             UiLogger.Error($"DiUninstallDriverW 실패 error={error}");
-            return new(false, $"드라이버 패키지 제거 실패: {FormatError(error)}", rebootRequired);
+            return new(false, $"드라이버 패키지 제거 실패: {FormatError(error)}", rebootRequired, error);
         }
         UiLogger.Info($"파일 드라이버 제거 완료 rebootRequired={rebootRequired}");
         return new(true, "파일 드라이버를 언로드하고 제거했습니다.", rebootRequired);
@@ -156,17 +156,31 @@ internal static class DriverInstaller
                 "프로세스 드라이버 설치 패키지를 찾을 수 없습니다. 전체 솔루션을 Debug | x64로 다시 빌드하십시오.",
                 false);
         }
+
+        int stopError = StopKernelDriver(ProcessDriverServiceName);
+        if (stopError != 0 && stopError != ErrorServiceNotActive &&
+            stopError != ErrorServiceDoesNotExist)
+        {
+            UiLogger.Error($"기존 프로세스 드라이버 중지 실패 GetLastError={stopError}");
+            return new(false, $"기존 프로세스 드라이버를 중지하지 못했습니다: {FormatError(stopError)}",
+                false, stopError);
+        }
+        if (stopError == 0)
+        {
+            UiLogger.Info("기존 프로세스 드라이버를 중지하고 새 패키지 설치를 진행");
+        }
+
         if (!DiInstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
             return new(false, $"프로세스 드라이버 패키지 설치 실패: {FormatError(error)}",
-                rebootRequired);
+                rebootRequired, error);
         }
         DriverOperationResult startResult = LoadProcessDriver();
         return startResult.Success
             ? new(true, "프로세스 드라이버를 설치하고 로드했습니다.", rebootRequired)
             : new(false, $"패키지는 설치했지만 드라이버를 로드하지 못했습니다: {startResult.Message}",
-                rebootRequired);
+                rebootRequired, startResult.LastError);
     }
 
     internal static DriverOperationResult LoadProcessDriver()
@@ -174,12 +188,12 @@ internal static class DriverInstaller
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
             return new(false,
-                $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+                $"드라이버 로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false, privilegeError);
         }
         int error = StartKernelDriver(ProcessDriverServiceName);
         if (error != 0 && error != ErrorServiceAlreadyRunning)
         {
-            return new(false, $"프로세스 드라이버를 로드하지 못했습니다: {FormatError(error)}", false);
+            return new(false, $"프로세스 드라이버를 로드하지 못했습니다: {FormatError(error)}", false, error);
         }
         return new(true,
             error == ErrorServiceAlreadyRunning
@@ -193,13 +207,13 @@ internal static class DriverInstaller
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
             return new(false,
-                $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false);
+                $"드라이버 언로드 권한을 활성화하지 못했습니다: {FormatError(privilegeError)}", false, privilegeError);
         }
         int stopError = StopKernelDriver(ProcessDriverServiceName);
         if (stopError != 0 && stopError != ErrorServiceNotActive &&
             stopError != ErrorServiceDoesNotExist)
         {
-            return new(false, $"프로세스 드라이버 언로드 실패: {FormatError(stopError)}", false);
+            return new(false, $"프로세스 드라이버 언로드 실패: {FormatError(stopError)}", false, stopError);
         }
 
         string? infPath = FindProcessDriverInf();
@@ -216,7 +230,7 @@ internal static class DriverInstaller
                 return new(true, "설치된 프로세스 드라이버가 없습니다.", false);
             }
             return new(false, $"프로세스 드라이버 패키지 제거 실패: {FormatError(error)}",
-                rebootRequired);
+                rebootRequired, error);
         }
         return new(true, "프로세스 드라이버를 언로드하고 제거했습니다.", rebootRequired);
     }
@@ -496,8 +510,12 @@ internal static class DriverInstaller
 
     private static string FormatError(int error)
     {
-        return $"{error} ({new Win32Exception(error).Message})";
+        return $"GetLastError={error} ({new Win32Exception(error).Message})";
     }
 }
 
-internal sealed record DriverOperationResult(bool Success, string Message, bool RebootRequired);
+internal sealed record DriverOperationResult(
+    bool Success,
+    string Message,
+    bool RebootRequired,
+    int? LastError = null);
