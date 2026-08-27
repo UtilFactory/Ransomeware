@@ -349,14 +349,27 @@ public partial class MainWindow
             UiLogger.Info($"프로세스 정책 네이티브 호출 시작 count={policy.PolicyCount}");
             Task<uint> applyTask = Task.Run(() =>
                 ProcessNativeMethods.UfProcReplacePolicyV2(ref policy));
+            bool diagnosticQueryTimedOut = false;
             while (!applyTask.IsCompleted)
             {
                 await Task.Delay(500);
-                if (!applyTask.IsCompleted)
+                if (!applyTask.IsCompleted && !diagnosticQueryTimedOut)
                 {
                     ProcessNativeMethods.StateReply diagnosticState = new();
-                    uint diagnosticError = await Task.Run(() =>
+                    Task<uint> diagnosticTask = Task.Run(() =>
                         ProcessNativeMethods.UfProcQueryState(ref diagnosticState));
+                    Task completedTask = await Task.WhenAny(
+                        diagnosticTask,
+                        Task.Delay(TimeSpan.FromSeconds(1)));
+                    if (completedTask != diagnosticTask)
+                    {
+                        diagnosticQueryTimedOut = true;
+                        UiLogger.Warn("프로세스 정책 적용 진단 상태 조회 시간 초과");
+                        ProcessPolicyStatusText.Text =
+                            "프로세스 정책 적용 중... (상태 조회 응답 없음)";
+                        continue;
+                    }
+                    uint diagnosticError = await diagnosticTask;
                     if (diagnosticError == ProcessNativeMethods.ErrorSuccess)
                     {
                         bool diagnosticDriver =
@@ -367,6 +380,12 @@ public partial class MainWindow
                         ProcessPolicyStatusText.Text =
                             $"프로세스 정책 적용 중... (커널 단계 {stage}, " +
                             $"{(diagnosticDriver ? "진단 드라이버" : "구버전 드라이버")})";
+                    }
+                    else
+                    {
+                        UiLogger.Warn($"프로세스 정책 적용 진단 상태 조회 실패 GetLastError={diagnosticError}");
+                        ProcessPolicyStatusText.Text =
+                            $"프로세스 정책 적용 중... (상태 조회 실패 GetLastError={diagnosticError})";
                     }
                 }
             }
