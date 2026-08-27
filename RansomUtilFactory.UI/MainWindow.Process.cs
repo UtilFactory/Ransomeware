@@ -345,8 +345,26 @@ public partial class MainWindow
                 Policies = rulesBuffer
             };
             UiLogger.Info($"프로세스 정책 네이티브 호출 시작 count={policy.PolicyCount}");
-            uint error = await Task.Run(() =>
+            Task<uint> applyTask = Task.Run(() =>
                 ProcessNativeMethods.UfProcReplacePolicyV2(ref policy));
+            while (!applyTask.IsCompleted)
+            {
+                await Task.Delay(500);
+                if (!applyTask.IsCompleted)
+                {
+                    ProcessNativeMethods.StateReply diagnosticState = new();
+                    uint diagnosticError = await Task.Run(() =>
+                        ProcessNativeMethods.UfProcQueryState(ref diagnosticState));
+                    if (diagnosticError == ProcessNativeMethods.ErrorSuccess)
+                    {
+                        UiLogger.Info($"프로세스 정책 적용 진단 stage={diagnosticState.Reserved} " +
+                            $"generation={diagnosticState.PolicyGeneration}");
+                        ProcessPolicyStatusText.Text =
+                            $"프로세스 정책 적용 중... (커널 단계 {diagnosticState.Reserved & 0x7fffffff})";
+                    }
+                }
+            }
+            uint error = await applyTask;
             UiLogger.Info($"프로세스 정책 네이티브 호출 완료 GetLastError={error}");
             if (error != ProcessNativeMethods.ErrorSuccess)
             {

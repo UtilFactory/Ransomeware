@@ -10,6 +10,17 @@
 #define UF_PROC_PROCESS_QUERY_LIMITED_INFORMATION 0x1000u
 #define UF_PROC_PROCESS_TERMINATE 0x0001u
 
+#define UF_PROC_POLICY_STAGE_IDLE          0u
+#define UF_PROC_POLICY_STAGE_ENTER         1u
+#define UF_PROC_POLICY_STAGE_VALIDATED     2u
+#define UF_PROC_POLICY_STAGE_BUILT         3u
+#define UF_PROC_POLICY_STAGE_LOCKED        4u
+#define UF_PROC_POLICY_STAGE_SWAPPED       5u
+#define UF_PROC_POLICY_STAGE_ORPHANS_MOVED 6u
+#define UF_PROC_POLICY_STAGE_UNLOCKED      7u
+#define UF_PROC_POLICY_STAGE_RETIRED       8u
+#define UF_PROC_POLICY_STAGE_COMPLETE      9u
+
 NTKERNELAPI
 BOOLEAN
 NTAPI
@@ -64,6 +75,7 @@ typedef struct _UF_PROCESS_DRIVER_CONTEXT {
     LIST_ENTRY PolicyListHead;
     LIST_ENTRY OrphanProcList;
     volatile LONG64 PolicyGeneration;
+    volatile LONG PolicyReplaceStage;
     KSPIN_LOCK EventLock;
     PUF_PROC_EVENT EventQueue;
     ULONG EventHead;

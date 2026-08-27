@@ -493,6 +493,8 @@ UfReplacePolicy(
     NTSTATUS status;
     PUF_PROC_POLICY oldPolicy;
 
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_ENTER);
     KdPrintEx((
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_INFO_LEVEL,
@@ -501,6 +503,8 @@ UfReplacePolicy(
 
     status = UfValidatePolicySet(Request);
     if (!NT_SUCCESS(status)) {
+        InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+            UF_PROC_POLICY_STAGE_IDLE);
         KdPrintEx((
             DPFLTR_IHVDRIVER_ID,
             DPFLTR_WARNING_LEVEL,
@@ -508,8 +512,12 @@ UfReplacePolicy(
             status));
         return status;
     }
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_VALIDATED);
     status = UfBuildPolicyList(Request, &newList);
     if (!NT_SUCCESS(status)) {
+        InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+            UF_PROC_POLICY_STAGE_IDLE);
         KdPrintEx((
             DPFLTR_IHVDRIVER_ID,
             DPFLTR_ERROR_LEVEL,
@@ -522,6 +530,8 @@ UfReplacePolicy(
         DPFLTR_INFO_LEVEL,
         "[UF_ProcessFilterFactory] replace-policy built count=%lu\n",
         Request->PolicyCount));
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_BUILT);
     InitializeListHead(&oldList);
 
     KeEnterCriticalRegion();
@@ -535,6 +545,8 @@ UfReplacePolicy(
             "[UF_ProcessFilterFactory] replace-policy lock-busy\n"));
         return STATUS_DEVICE_BUSY;
     }
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_LOCKED);
     KdPrintEx((
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_INFO_LEVEL,
@@ -548,6 +560,8 @@ UfReplacePolicy(
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_INFO_LEVEL,
         "[UF_ProcessFilterFactory] replace-policy lists-swapped\n"));
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_SWAPPED);
     while (!IsListEmpty(&newList)) {
         PLIST_ENTRY entry = RemoveHeadList(&newList);
         InsertTailList(&gUfProcessDriverContext.PolicyListHead, entry);
@@ -574,6 +588,8 @@ UfReplacePolicy(
         }
     }
     UfMoveOrphanProcessesToPoliciesLocked();
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_ORPHANS_MOVED);
     InterlockedIncrement64(&gUfProcessDriverContext.PolicyGeneration);
 
     KdPrintEx((
@@ -583,6 +599,8 @@ UfReplacePolicy(
 
     ExReleasePushLockExclusive(&gUfProcessDriverContext.PolicyLock);
     KeLeaveCriticalRegion();
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_UNLOCKED);
 
     while (!IsListEmpty(&oldList)) {
         PLIST_ENTRY entry = RemoveHeadList(&oldList);
@@ -593,6 +611,8 @@ UfReplacePolicy(
         DPFLTR_IHVDRIVER_ID,
         DPFLTR_INFO_LEVEL,
         "[UF_ProcessFilterFactory] replace-policy complete\n"));
+    InterlockedExchange(&gUfProcessDriverContext.PolicyReplaceStage,
+        UF_PROC_POLICY_STAGE_COMPLETE);
     return STATUS_SUCCESS;
 }
 
@@ -811,14 +831,22 @@ UfQueryState(
         0,
         0);
     KeEnterCriticalRegion();
-    ExAcquirePushLockShared(&gUfProcessDriverContext.PolicyLock);
-    for (entry = gUfProcessDriverContext.PolicyListHead.Flink;
-         entry != &gUfProcessDriverContext.PolicyListHead;
-         entry = entry->Flink) {
-        ++reply->PolicyCount;
+    if (ExTryAcquirePushLockShared(&gUfProcessDriverContext.PolicyLock)) {
+        for (entry = gUfProcessDriverContext.PolicyListHead.Flink;
+             entry != &gUfProcessDriverContext.PolicyListHead;
+             entry = entry->Flink) {
+            ++reply->PolicyCount;
+        }
+        ExReleasePushLockShared(&gUfProcessDriverContext.PolicyLock);
+    } else {
+        /* 정책 교체가 잠긴 동안에도 진단 단계는 조회할 수 있어야 합니다. */
+        reply->Reserved = 0x80000000u;
     }
-    ExReleasePushLockShared(&gUfProcessDriverContext.PolicyLock);
     KeLeaveCriticalRegion();
+    reply->Reserved |= (ULONG)InterlockedCompareExchange(
+        &gUfProcessDriverContext.PolicyReplaceStage,
+        0,
+        0);
 
     KeAcquireSpinLock(&gUfProcessDriverContext.EventLock, &oldIrql);
     reply->QueueDepth = gUfProcessDriverContext.EventCount;
