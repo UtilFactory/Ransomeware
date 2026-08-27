@@ -339,6 +339,9 @@ public partial class MainWindow
                     };
                     Marshal.StructureToPtr(nativeRule,
                         IntPtr.Add(rulesBuffer, index * ruleSize), false);
+                    UiLogger.Info($"프로세스 정책 규칙 변환 index={index} ruleId={nativeRule.RuleId} " +
+                        $"name={processName} fullPath={nativeRule.IsCmpFullPath != 0} " +
+                        $"sign={nativeRule.IsSign != 0} path={rule.Image}");
                 }
             }
             ProcessNativeMethods.PolicyInputV2 policy = new()
@@ -356,6 +359,7 @@ public partial class MainWindow
                 if (!applyTask.IsCompleted && !diagnosticQueryTimedOut)
                 {
                     uint nativeStage = ProcessNativeMethods.UfProcGetPolicyCallStage();
+                    UiLogger.Debug($"프로세스 정책 적용 진단 조회 시작 nativeStage={nativeStage}");
                     ProcessNativeMethods.StateReply diagnosticState = new();
                     Task<uint> diagnosticTask = Task.Run(() =>
                         ProcessNativeMethods.UfProcQueryState(ref diagnosticState));
@@ -371,6 +375,8 @@ public partial class MainWindow
                         continue;
                     }
                     uint diagnosticError = await diagnosticTask;
+                    UiLogger.Debug($"프로세스 정책 적용 진단 조회 완료 error={diagnosticError} " +
+                        $"stage={diagnosticState.Reserved} generation={diagnosticState.PolicyGeneration}");
                     if (diagnosticError == ProcessNativeMethods.ErrorSuccess)
                     {
                         bool diagnosticDriver =
