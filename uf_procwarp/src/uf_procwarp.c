@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <wintrust.h>
 #include <softpub.h>
 #include "../include/uf_procwarp.h"
@@ -18,6 +19,108 @@ static HANDLE gSignatureThread = NULL;
 static UF_PROC_EVENT_CALLBACK gCallback = NULL;
 static void* gCallbackContext = NULL;
 static volatile LONG gPolicyCallStage = 0;
+
+static void
+UfProcNativeLog(
+    const wchar_t* Format,
+    ...
+    )
+{
+    wchar_t modulePath[32768];
+    wchar_t logPath[32768];
+    wchar_t message[4096];
+    wchar_t line[4096];
+    char utf8[12288];
+    wchar_t* separator;
+    SYSTEMTIME systemTime;
+    HANDLE file;
+    DWORD bytes;
+    int lineLength;
+    int utf8Length;
+    va_list arguments;
+
+    if (Format == NULL) {
+        return;
+    }
+    va_start(arguments, Format);
+    lineLength = _vsnwprintf_s(
+        message,
+        _countof(message),
+        _TRUNCATE,
+        Format,
+        arguments);
+    va_end(arguments);
+    if (lineLength < 0) {
+        return;
+    }
+    GetLocalTime(&systemTime);
+    lineLength = swprintf_s(
+        line,
+        _countof(line),
+        L"%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu tid=%lu %ls\r\n",
+        systemTime.wYear,
+        systemTime.wMonth,
+        systemTime.wDay,
+        systemTime.wHour,
+        systemTime.wMinute,
+        systemTime.wSecond,
+        systemTime.wMilliseconds,
+        GetCurrentProcessId(),
+        GetCurrentThreadId(),
+        message);
+    if (lineLength < 0) {
+        return;
+    }
+    utf8Length = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        line,
+        lineLength,
+        utf8,
+        (int)sizeof(utf8),
+        NULL,
+        NULL);
+    if (utf8Length <= 0) {
+        return;
+    }
+    if (GetModuleFileNameW(NULL, modulePath, (DWORD)_countof(modulePath)) == 0) {
+        return;
+    }
+    separator = wcsrchr(modulePath, L'\\');
+    if (separator == NULL) {
+        return;
+    }
+    *separator = L'\0';
+    if (swprintf_s(
+            logPath,
+            _countof(logPath),
+            L"%ls\\logs",
+            modulePath) < 0) {
+        return;
+    }
+    (void)CreateDirectoryW(logPath, NULL);
+    if (swprintf_s(
+            logPath,
+            _countof(logPath),
+            L"%ls\\logs\\uf_procwarp.log",
+            modulePath) < 0) {
+        return;
+    }
+    file = CreateFileW(
+        logPath,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        OutputDebugStringW(line);
+        return;
+    }
+    (void)WriteFile(file, utf8, (DWORD)utf8Length, &bytes, NULL);
+    CloseHandle(file);
+}
 
 static const wchar_t* const gCriticalNames[] = {
     L"smss.exe",
@@ -221,8 +324,14 @@ UfProcSendIoctl(
     device = gDevice;
     if (device == INVALID_HANDLE_VALUE) {
         ReleaseSRWLockShared(&gLock);
+        UfProcNativeLog(L"ioctl skipped code=0x%08lX reason=invalid-device", ControlCode);
         return ERROR_INVALID_HANDLE;
     }
+    UfProcNativeLog(
+        L"ioctl begin code=0x%08lX input=%lu output=%lu",
+        ControlCode,
+        InputSize,
+        OutputSize);
     succeeded = DeviceIoControl(
         device,
         ControlCode,
@@ -233,6 +342,11 @@ UfProcSendIoctl(
         &returned,
         NULL);
     result = succeeded ? ERROR_SUCCESS : GetLastError();
+    UfProcNativeLog(
+        L"ioctl end code=0x%08lX result=%lu bytes=%lu",
+        ControlCode,
+        result,
+        returned);
     ReleaseSRWLockShared(&gLock);
 
     if (BytesReturned != NULL) {
@@ -495,6 +609,7 @@ UfProcInitialize(
     void
     )
 {
+    UfProcNativeLog(L"initialize");
     return ERROR_SUCCESS;
 }
 
@@ -549,19 +664,23 @@ UfProcConnect(
 {
     HANDLE device;
 
+    UfProcNativeLog(L"connect begin");
     AcquireSRWLockExclusive(&gLock);
     if (gDevice != INVALID_HANDLE_VALUE) {
         ReleaseSRWLockExclusive(&gLock);
+        UfProcNativeLog(L"connect already-connected");
         return ERROR_ALREADY_EXISTS;
     }
     device = UfProcOpenDevice();
     if (device == INVALID_HANDLE_VALUE) {
         unsigned long result = GetLastError();
         ReleaseSRWLockExclusive(&gLock);
+        UfProcNativeLog(L"connect open-failed error=%lu", result);
         return result;
     }
     gDevice = device;
     ReleaseSRWLockExclusive(&gLock);
+    UfProcNativeLog(L"connect success");
     return ERROR_SUCCESS;
 }
 
@@ -572,6 +691,7 @@ UfProcDisconnect(
 {
     HANDLE device;
 
+    UfProcNativeLog(L"disconnect begin");
     UfProcStopEventReceiver();
     AcquireSRWLockExclusive(&gLock);
     device = gDevice;
@@ -580,6 +700,7 @@ UfProcDisconnect(
     if (device != INVALID_HANDLE_VALUE) {
         CloseHandle(device);
     }
+    UfProcNativeLog(L"disconnect complete");
 }
 
 int __stdcall
@@ -673,6 +794,10 @@ UfProcSendPolicyV2(
     unsigned long result = ERROR_SUCCESS;
 
     InterlockedExchange(&gPolicyCallStage, 1);
+    UfProcNativeLog(
+        L"policy-v2 stage=1 build-start control=0x%08lX count=%lu",
+        ControlCode,
+        Policy != NULL ? Policy->PolicyCount : 0);
 
     if (Policy == NULL || Policy->PolicyCount > UF_PROC_MAX_POLICIES ||
         (Policy->PolicyCount != 0 && Policy->Policies == NULL)) {
@@ -695,6 +820,10 @@ UfProcSendPolicyV2(
         }
     }
     InterlockedExchange(&gPolicyCallStage, 2);
+    UfProcNativeLog(
+        L"policy-v2 stage=2 ioctl-start control=0x%08lX count=%lu",
+        ControlCode,
+        Policy->PolicyCount);
     result = UfProcSendIoctl(
         ControlCode,
         request,
@@ -703,6 +832,11 @@ UfProcSendPolicyV2(
         0,
         NULL);
     InterlockedExchange(&gPolicyCallStage, result == ERROR_SUCCESS ? 3 : 4);
+    UfProcNativeLog(
+        L"policy-v2 stage=%lu ioctl-return control=0x%08lX result=%lu",
+        result == ERROR_SUCCESS ? 3ul : 4ul,
+        ControlCode,
+        result);
 Exit:
     SecureZeroMemory(request, sizeof(*request));
     HeapFree(GetProcessHeap(), 0, request);
@@ -823,6 +957,7 @@ UfProcQueryState(
     if (device == INVALID_HANDLE_VALUE) {
         return ERROR_INVALID_HANDLE;
     }
+    UfProcNativeLog(L"query-state begin direct");
     result = DeviceIoControl(
         device,
         UF_PROC_IOCTL_QUERY_STATE,
@@ -832,6 +967,10 @@ UfProcQueryState(
         sizeof(*State),
         &bytesReturned,
         NULL) ? ERROR_SUCCESS : GetLastError();
+    UfProcNativeLog(
+        L"query-state end direct result=%lu bytes=%lu",
+        result,
+        bytesReturned);
     if (result != ERROR_SUCCESS) {
         return result;
     }
