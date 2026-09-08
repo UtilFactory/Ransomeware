@@ -176,3 +176,20 @@ Driver Verifier 시험:
   완료된다.
 - 실제 드라이버 설치와 정책 차단·서명 timeout·ProcList 재연결 동작은 Win11 VM에서
   별도로 수행해야 한다.
+
+## 10. 2026-09-09 재빌드 및 VM 시험 패키지
+
+- `Debug | x64` 프로세스 드라이버, `uf_procwarp.dll`, `UF_ProcessControlTest.exe`,
+  WPF UI를 다시 빌드했다. 컴파일·링크 오류와 경고는 없다.
+- `Release | x64` 프로세스 드라이버도 다시 빌드했으며 SYS·CAT 패키지 생성과 서명이
+  완료됐다. 빌드 종료 시 표시되는 `x86\\InfVerif.dll` 예외는 앞 절과 동일한 환경
+  예외이며 산출물 생성에는 영향을 주지 않는다.
+- 최신 Debug 시험 파일을 `artifacts\\tsk8-latest`에 모았다.
+- Hyper-V `Win11` VM이 실행 중임을 확인하고 다음 파일을
+  `C:\\RansomUtilFactory\\TSK-8`에 복사했다.
+  `UF_ProcessFilterFactory.inf/.sys/.cat/.cer`, `uf_procwarp.dll`,
+  `UF_ProcessControlTest.exe`, WPF UI 실행 파일과 종속 파일.
+- VM에서 최신 UI를 관리자 권한으로 실행한 뒤 프로세스 드라이버를 재설치하고,
+  상단 상태에 `진단 드라이버 v2 · 핸들 2개`가 표시되는지 확인해야 한다. 이후
+  정책 적용 시 `uf_procwarp.log`의 `policy-v2 stage=3 ioctl-return`과 UI의
+  `nativeStage=3` 기록을 확인한다.
