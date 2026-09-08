@@ -193,3 +193,32 @@ Driver Verifier 시험:
   상단 상태에 `진단 드라이버 v2 · 핸들 2개`가 표시되는지 확인해야 한다. 이후
   정책 적용 시 `uf_procwarp.log`의 `policy-v2 stage=3 ioctl-return`과 UI의
   `nativeStage=3` 기록을 확인한다.
+
+## 11. 2026-09-09 프로세스 연결 오류 수정
+
+- 로그의 `connect success` 직후 `signature-open-failed error=5`는 설치 이후
+  서명 전용 두 번째 장치를 열 때 발생했다. `IoCreateDeviceSecure`의 `Exclusive`가
+  `TRUE`로 남아 있던 것을 `FALSE`로 수정했다. 관리자 전용 ACL은 유지한다.
+- 서명 대기 중 DLL 공용 잠금을 보유하지 않도록 하고 서명 핸들에 OVERLAPPED I/O를
+  사용한다. 종료 이벤트 발생 시 해당 요청을 취소하고 완료를 기다린 뒤 핸들을 닫는다.
+- 커널 취소 콜백 및 파일 객체별 CLEANUP을 구현했다. 대기 IRP는 공개 전에 pending으로
+  표시하며 서명 전달·취소·정리가 경쟁해도 완료 소유권을 한 경로만 갖도록 한다.
+- 연결 실패 후 설치 성공 메시지가 덮어쓰이지 않도록 UI에서 설치·로드와 통신 연결
+  결과를 구분한다. 연결 성공 시 진단 버전과 열린 핸들 개수도 로그에 기록한다.
+- 수정된 SYS는 `진단 드라이버 v3`으로 표시한다. 새 DLL은 수신 시작 전에 버전을
+  확인하며 구버전이면 `ERROR_REVISION_MISMATCH`를 반환하고 재설치 필요 로그를 남긴다.
+- `UF_ProcessControlTest.exe --connection-test`는 정책을 바꾸지 않고 서명 수신 중
+  상태 조회, 두 핸들 확인, 수신 취소, 핸들 정리 및 재시작을 3회 검사한다.
+  시험 전체 제한 시간은 15초이다. 다른 UI를 종료한 전용 VM에서 실행한다.
+- 기존 `--self-test`는 수신 스레드 시작 이후 정책을 적용하도록 변경했다.
+  서명 대기 중 정책 적용이 반환되는지와 전체 경로 불일치 차단을 함께 검사한다.
+  이 시험은 현재 정책을 교체·초기화하므로 시험 전용 VM에서만 실행한다.
+- 최종 전체 솔루션 Rebuild: Debug x64 및 Release x64 모두 성공, 각각 경고 0개·오류 0개.
+  Visual Studio 18 Insiders의 `Bin\amd64\MSBuild.exe`를 사용하여 INF 검증도 완료했다.
+- Debug 공용 패키지의 SYS·DLL·UI·시험 실행 파일을 `x64\Debug`,
+  `artifacts\tsk8-latest`, WPF Debug 출력 및 VM `C:\RansomUtilFactory\TSK-8`에 복사했다.
+  중첩된 프로세스 드라이버 패키지도 갱신했다.
+- 이번 수정본의 VM 재설치·동적 시험은 아직 수행하지 않았다. 사용 가능한 인증된
+  게스트 명령 세션이 없어 호스트에서 게스트 파일 복사까지만 수행했다.
+  정상 기대값은 UI의 `진단 드라이버 v3 · 핸들 2개`, 연결 반복 시험 성공 및
+  정책 적용의 `policy-v2 stage=3 ioctl-return`이다.

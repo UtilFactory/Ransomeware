@@ -941,6 +941,42 @@ UfDequeueEvents(
 }
 
 static NTSTATUS
+UfDispatchCleanup(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    );
+
+/* 호출자는 SignatureLock을 보유하며 취소 콜백과 완료 소유권을 나눕니다. */
+static PIRP
+UfTakeSignatureWaitLocked(VOID)
+{
+    PIRP irp = gUfProcessDriverContext.SignatureWaitIrp;
+    gUfProcessDriverContext.SignatureWaitIrp = NULL;
+    if (irp != NULL && IoSetCancelRoutine(irp, NULL) == NULL) {
+        /* 취소 콜백이 이미 소유한 IRP는 그 콜백에서 완료합니다. */
+        return NULL;
+    }
+    return irp;
+}
+
+static VOID
+UfCancelSignatureIrp(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    KIRQL oldIrql;
+    UNREFERENCED_PARAMETER(DeviceObject);
+    IoReleaseCancelSpinLock(Irp->CancelIrql);
+    KeAcquireSpinLock(&gUfProcessDriverContext.SignatureLock, &oldIrql);
+    if (gUfProcessDriverContext.SignatureWaitIrp == Irp) {
+        gUfProcessDriverContext.SignatureWaitIrp = NULL;
+    }
+    KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+    (VOID)UfCompleteIrp(Irp, STATUS_CANCELLED, 0);
+}
+
+static NTSTATUS
 UfWaitSignature(
     _Inout_ PIRP Irp,
     _In_ ULONG InputLength,
@@ -949,6 +985,7 @@ UfWaitSignature(
 {
     const UF_PROC_WAIT_SIGNATURE* request;
     KIRQL oldIrql;
+    BOOLEAN cancelHere = FALSE;
 
     if (InputLength != sizeof(UF_PROC_WAIT_SIGNATURE) ||
         OutputLength < sizeof(UF_PROC_SIGNATURE_REQUEST)) {
@@ -966,9 +1003,22 @@ UfWaitSignature(
         KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
         return STATUS_DEVICE_BUSY;
     }
-    gUfProcessDriverContext.SignatureWaitIrp = Irp;
-    KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+    if (Irp->Cancel || IoGetCurrentIrpStackLocation(Irp)->FileObject->FsContext == NULL) {
+        KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+        return STATUS_CANCELLED;
+    }
+    /* 다른 경로에 공개하기 전에 pending 표시와 취소 콜백을 설정합니다. */
     IoMarkIrpPending(Irp);
+    IoSetCancelRoutine(Irp, UfCancelSignatureIrp);
+    gUfProcessDriverContext.SignatureWaitIrp = Irp;
+    if (Irp->Cancel && IoSetCancelRoutine(Irp, NULL) != NULL) {
+        gUfProcessDriverContext.SignatureWaitIrp = NULL;
+        cancelHere = TRUE;
+    }
+    KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+    if (cancelHere) {
+        (VOID)UfCompleteIrp(Irp, STATUS_CANCELLED, 0);
+    }
     return STATUS_PENDING;
 }
 
@@ -1018,14 +1068,52 @@ UfDispatchCreate(
     )
 {
     PIO_STACK_LOCATION stack;
+    KIRQL oldIrql;
 
     UNREFERENCED_PARAMETER(DeviceObject);
     stack = IoGetCurrentIrpStackLocation(Irp);
+    KeAcquireSpinLock(&gUfProcessDriverContext.SignatureLock, &oldIrql);
     if (InterlockedIncrement(&gUfProcessDriverContext.ClientOpenCount) == 1) {
         InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 1);
         UfResetEventQueue();
     }
     stack->FileObject->FsContext = (PVOID)(ULONG_PTR)1;
+    KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+    return UfCompleteIrp(Irp, STATUS_SUCCESS, 0);
+}
+
+static NTSTATUS
+UfDispatchCleanup(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    PFILE_OBJECT fileObject = IoGetCurrentIrpStackLocation(Irp)->FileObject;
+    PIRP waitIrp = NULL;
+    KIRQL oldIrql;
+    BOOLEAN connected;
+    UNREFERENCED_PARAMETER(DeviceObject);
+    KeAcquireSpinLock(&gUfProcessDriverContext.SignatureLock, &oldIrql);
+    connected = fileObject->FsContext != NULL;
+    fileObject->FsContext = NULL;
+    if (gUfProcessDriverContext.SignatureWaitIrp != NULL &&
+        IoGetCurrentIrpStackLocation(gUfProcessDriverContext.SignatureWaitIrp)->FileObject == fileObject) {
+        waitIrp = UfTakeSignatureWaitLocked();
+    }
+    if (connected && InterlockedDecrement(&gUfProcessDriverContext.ClientOpenCount) == 0) {
+        PUF_PROC_SIGNATURE_QUERY query = gUfProcessDriverContext.SignatureQuery;
+        InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 0);
+        if (query != NULL) {
+            gUfProcessDriverContext.SignatureQuery = NULL;
+            query->Completed = FALSE;
+            KeSetEvent(&query->CompletionEvent, IO_NO_INCREMENT, FALSE);
+        }
+        UfResetEventQueue();
+    }
+    KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+    if (waitIrp != NULL) {
+        (VOID)UfCompleteIrp(waitIrp, STATUS_CANCELLED, 0);
+    }
     return UfCompleteIrp(Irp, STATUS_SUCCESS, 0);
 }
 
@@ -1035,18 +1123,8 @@ UfDispatchClose(
     _Inout_ PIRP Irp
     )
 {
-    PIO_STACK_LOCATION stack;
-
     UNREFERENCED_PARAMETER(DeviceObject);
-    stack = IoGetCurrentIrpStackLocation(Irp);
-    if (stack->FileObject->FsContext != NULL) {
-        stack->FileObject->FsContext = NULL;
-        UfCancelSignatureWait(STATUS_CANCELLED);
-        if (InterlockedDecrement(&gUfProcessDriverContext.ClientOpenCount) == 0) {
-            InterlockedExchange(&gUfProcessDriverContext.ClientConnected, 0);
-            UfResetEventQueue();
-        }
-    }
+    /* 대기 IRP가 남아 있으면 CLOSE가 지연되므로 정리는 CLEANUP에서 수행합니다. */
     return UfCompleteIrp(Irp, STATUS_SUCCESS, 0);
 }
 
@@ -1154,6 +1232,7 @@ UfCreateControlPlane(
     }
     DriverObject->MajorFunction[IRP_MJ_CREATE] = UfDispatchCreate;
     DriverObject->MajorFunction[IRP_MJ_CLOSE] = UfDispatchClose;
+    DriverObject->MajorFunction[IRP_MJ_CLEANUP] = UfDispatchCleanup;
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = UfDispatchDeviceControl;
 
     status = IoCreateDeviceSecure(
@@ -1162,7 +1241,7 @@ UfCreateControlPlane(
         &deviceName,
         FILE_DEVICE_UNKNOWN,
         FILE_DEVICE_SECURE_OPEN,
-        TRUE,
+        FALSE,
         &sddl,
         &gUfProcessDeviceClassGuid,
         &gUfProcessDriverContext.ControlDevice);
@@ -1195,8 +1274,7 @@ UfCancelSignatureWait(
     KIRQL oldIrql;
 
     KeAcquireSpinLock(&gUfProcessDriverContext.SignatureLock, &oldIrql);
-    waitIrp = gUfProcessDriverContext.SignatureWaitIrp;
-    gUfProcessDriverContext.SignatureWaitIrp = NULL;
+    waitIrp = UfTakeSignatureWaitLocked();
     query = gUfProcessDriverContext.SignatureQuery;
     if (query != NULL) {
         gUfProcessDriverContext.SignatureQuery = NULL;
@@ -1513,7 +1591,12 @@ UfRequestSignatureDecision(
         ExFreePoolWithTag(query, UF_PROC_POOL_TAG);
         return STATUS_ACCESS_DENIED;
     }
-    gUfProcessDriverContext.SignatureWaitIrp = NULL;
+    waitIrp = UfTakeSignatureWaitLocked();
+    if (waitIrp == NULL) {
+        KeReleaseSpinLock(&gUfProcessDriverContext.SignatureLock, oldIrql);
+        ExFreePoolWithTag(query, UF_PROC_POOL_TAG);
+        return STATUS_ACCESS_DENIED;
+    }
     gUfProcessDriverContext.SignatureQuery = query;
     {
         PUF_PROC_SIGNATURE_REQUEST output =

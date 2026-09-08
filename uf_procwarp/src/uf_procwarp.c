@@ -389,19 +389,48 @@ UfProcSendSignatureIoctl(
     )
 {
     HANDLE device;
+    HANDLE stopEvent;
+    HANDLE waits[2];
+    OVERLAPPED overlapped;
+    DWORD returned = 0;
+    DWORD waitResult;
     unsigned long result;
 
     AcquireSRWLockShared(&gLock);
     device = gSignatureDevice;
-    result = UfProcSendIoctlToDevice(
-        device,
-        ControlCode,
-        Input,
-        InputSize,
-        Output,
-        OutputSize,
-        BytesReturned);
+    stopEvent = gStopEvent;
     ReleaseSRWLockShared(&gLock);
+    if (device == INVALID_HANDLE_VALUE || stopEvent == NULL) {
+        return ERROR_INVALID_HANDLE;
+    }
+    if (WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) {
+        return ERROR_OPERATION_ABORTED;
+    }
+    ZeroMemory(&overlapped, sizeof(overlapped));
+    overlapped.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (overlapped.hEvent == NULL) {
+        return GetLastError();
+    }
+    UfProcNativeLog(L"signature-ioctl begin code=0x%08lX", ControlCode);
+    result = DeviceIoControl(device, ControlCode, Input, InputSize,
+        Output, OutputSize, &returned, &overlapped) ? ERROR_SUCCESS : GetLastError();
+    if (result == ERROR_IO_PENDING) {
+        waits[0] = overlapped.hEvent;
+        waits[1] = stopEvent;
+        waitResult = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        if (waitResult != WAIT_OBJECT_0) {
+            (void)CancelIoEx(device, &overlapped);
+        }
+        /* 취소 요청 후에도 커널의 완료를 확인해야 버퍼와 핸들을 해제할 수 있습니다. */
+        result = GetOverlappedResult(device, &overlapped, &returned, TRUE)
+            ? ERROR_SUCCESS : GetLastError();
+    }
+    CloseHandle(overlapped.hEvent);
+    if (BytesReturned != NULL) {
+        *BytesReturned = returned;
+    }
+    UfProcNativeLog(L"signature-ioctl end code=0x%08lX result=%lu bytes=%lu",
+        ControlCode, result, returned);
     return result;
 }
 
@@ -1042,6 +1071,9 @@ UfProcStartEventReceiver(
     HANDLE thread;
     HANDLE signatureThread;
     HANDLE signatureDevice;
+    UF_PROC_STATE_REPLY state;
+    unsigned long stateBytes = 0;
+    unsigned long stateError;
 
     if (Callback == NULL) {
         return ERROR_INVALID_PARAMETER;
@@ -1055,8 +1087,24 @@ UfProcStartEventReceiver(
         ReleaseSRWLockExclusive(&gLock);
         return ERROR_ALREADY_EXISTS;
     }
+    /* 취소를 지원하지 않는 구버전 SYS에는 서명 대기 요청을 보내지 않습니다. */
+    ZeroMemory(&state, sizeof(state));
+    stateError = UfProcSendIoctlToDevice(gDevice, UF_PROC_IOCTL_QUERY_STATE,
+        NULL, 0, &state, sizeof(state), &stateBytes);
+    if (stateError == ERROR_SUCCESS &&
+        (stateBytes != sizeof(state) || state.Header.Version != UF_PROC_PROTOCOL_VERSION ||
+         state.Header.Size != sizeof(state) || (state.Reserved & 0x7f000000u) != 0x55000000u ||
+         ((state.Reserved >> 8) & 0xffu) < 3u)) {
+        stateError = ERROR_REVISION_MISMATCH;
+    }
+    if (stateError != ERROR_SUCCESS) {
+        ReleaseSRWLockExclusive(&gLock);
+        UfProcNativeLog(L"event-receiver driver-check-failed error=%lu diagnostic=0x%08lX; reinstall driver v3 or later",
+            stateError, state.Reserved);
+        return stateError;
+    }
     if (gSignatureDevice == INVALID_HANDLE_VALUE) {
-        signatureDevice = UfProcOpenDevice(0);
+        signatureDevice = UfProcOpenDevice(FILE_FLAG_OVERLAPPED);
         if (signatureDevice == INVALID_HANDLE_VALUE) {
             unsigned long result = GetLastError();
             ReleaseSRWLockExclusive(&gLock);
@@ -1064,6 +1112,7 @@ UfProcStartEventReceiver(
             return result;
         }
         gSignatureDevice = signatureDevice;
+        UfProcNativeLog(L"event-receiver signature-open-success overlapped=1");
     }
     stopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (stopEvent == NULL) {
@@ -1117,6 +1166,7 @@ UfProcStartEventReceiver(
     gReceiverThread = thread;
     gSignatureThread = signatureThread;
     ReleaseSRWLockExclusive(&gLock);
+    UfProcNativeLog(L"event-receiver started");
     return ERROR_SUCCESS;
 }
 
@@ -1130,13 +1180,14 @@ UfProcStopEventReceiver(
     HANDLE stopEvent;
     HANDLE signatureDevice;
 
+    UfProcNativeLog(L"event-receiver stop begin");
     AcquireSRWLockExclusive(&gLock);
     thread = gReceiverThread;
     signatureThread = gSignatureThread;
     stopEvent = gStopEvent;
     signatureDevice = gSignatureDevice;
-    gSignatureDevice = INVALID_HANDLE_VALUE;
     if (thread == NULL && signatureThread == NULL) {
+        gSignatureDevice = INVALID_HANDLE_VALUE;
         ReleaseSRWLockExclusive(&gLock);
         if (signatureDevice != INVALID_HANDLE_VALUE) {
             (void)CancelIoEx(signatureDevice, NULL);
@@ -1147,12 +1198,7 @@ UfProcStopEventReceiver(
     SetEvent(stopEvent);
     ReleaseSRWLockExclusive(&gLock);
 
-    /* 별도 핸들이므로 대기 중인 서명 IOCTL만 취소합니다. */
-    if (signatureDevice != INVALID_HANDLE_VALUE) {
-        (void)CancelIoEx(signatureDevice, NULL);
-        CloseHandle(signatureDevice);
-    }
-
+    /* 서명 스레드가 종료 이벤트를 보고 요청 취소와 완료 확인을 수행합니다. */
     WaitForSingleObject(thread, INFINITE);
     if (signatureThread != NULL) {
         WaitForSingleObject(signatureThread, INFINITE);
@@ -1161,15 +1207,20 @@ UfProcStopEventReceiver(
     if (signatureThread != NULL) {
         CloseHandle(signatureThread);
     }
+    if (signatureDevice != INVALID_HANDLE_VALUE) {
+        CloseHandle(signatureDevice);
+    }
     CloseHandle(stopEvent);
 
     AcquireSRWLockExclusive(&gLock);
     gReceiverThread = NULL;
     gSignatureThread = NULL;
+    gSignatureDevice = INVALID_HANDLE_VALUE;
     gStopEvent = NULL;
     gCallback = NULL;
     gCallbackContext = NULL;
     ReleaseSRWLockExclusive(&gLock);
+    UfProcNativeLog(L"event-receiver stop complete");
 }
 
 unsigned long __stdcall

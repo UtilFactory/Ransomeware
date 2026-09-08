@@ -14,6 +14,7 @@ public partial class MainWindow
     private bool _processInitialized;
     private bool _processConnected;
     private bool _processReceiverStarted;
+    private int? _processConnectionError;
     private uint _nextProcessRuleId = 1;
     private const int MaxPendingProcessEventLogs = 4000;
     private const int ProcessEventBatchSize = 200;
@@ -159,7 +160,18 @@ public partial class MainWindow
         ProcessDriverStatusText.Text = result.Message;
         if (result.Success)
         {
-            ConnectProcessControl(showFailure: true);
+            UiLogger.Info("프로세스 드라이버 설치·로드 성공, 통신 연결 확인 시작");
+            ConnectProcessControl(showFailure: false);
+            if (!_processConnected || !_processReceiverStarted)
+            {
+                result = new(false,
+                    $"드라이버 설치·로드는 완료했지만 통신 연결에 실패했습니다.\n{ProcessDriverStatusText.Text}",
+                    result.RebootRequired, _processConnectionError);
+            }
+            else
+            {
+                result = result with { Message = "프로세스 드라이버 설치·로드 및 통신 연결을 완료했습니다." };
+            }
         }
         ShowDriverOperationResult("프로세스 드라이버 설치", result);
     }
@@ -203,6 +215,7 @@ public partial class MainWindow
 
     private void ConnectProcessControl(bool showFailure)
     {
+        _processConnectionError = null;
         if (!EnsureProcessCommunicationInitialized(showFailure))
         {
             return;
@@ -219,6 +232,7 @@ public partial class MainWindow
             error != ProcessNativeMethods.ErrorAlreadyExists)
         {
             string message = GetProcessNativeErrorMessage(error);
+            _processConnectionError = (int)error;
             UiLogger.Warn($"프로세스 제어 필터 통신 연결 실패 GetLastError={error} message={message}");
             ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결 실패 (GetLastError={error}): {message}";
             SetProcessConnectionState(false, $"GetLastError={error}");
@@ -236,6 +250,8 @@ public partial class MainWindow
         {
             ProcessNativeMethods.UfProcDisconnect();
             _processConnected = false;
+            _processConnectionError = (int)error;
+            ProcessDriverStatusText.Text = $"프로세스 이벤트 수신 연결 실패 (GetLastError={error}): {GetProcessNativeErrorMessage(error)}";
             UiLogger.Warn($"프로세스 이벤트 수신 시작 실패 GetLastError={error} message={GetProcessNativeErrorMessage(error)}");
             if (showFailure)
             {
@@ -257,6 +273,7 @@ public partial class MainWindow
                     ? $" · 진단 드라이버 v{diagnosticVersion} · 핸들 {openHandleCount}개"
                     : " · 구버전 드라이버");
             ProcessDriverStatusText.Text = $"프로세스 제어 필터 연결됨 · {detail}";
+            UiLogger.Info($"프로세스 제어 필터 연결 완료 {detail}");
             SetProcessConnectionState(true, detail);
         }
         else

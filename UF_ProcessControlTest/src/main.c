@@ -94,6 +94,39 @@ SetSingleRule(
     return UfProcReplacePolicy(&policy);
 }
 
+static DWORD WINAPI
+RunConnectionTest(void* Context)
+{
+    unsigned long index;
+    UNREFERENCED_PARAMETER(Context);
+    for (index = 0; index < 3; ++index) {
+        UF_PROC_STATE_REPLY state;
+        unsigned long error = UfProcStartEventReceiver(OnProcessEvent, NULL);
+        if (error != ERROR_SUCCESS) {
+            PrintError(L"두 번째 장치 핸들 및 수신 시작", error);
+            return 1;
+        }
+        /* 서명 요청이 대기하는 동안 일반 상태 조회가 반환되는지 검사합니다. */
+        Sleep(200);
+        error = UfProcQueryState(&state);
+        if (error != ERROR_SUCCESS || ((state.Reserved >> 8) & 0xffu) < 3 ||
+            ((state.Reserved >> 16) & 0xffu) < 2) {
+            fwprintf(stderr, L"수신 중 상태 검증 실패 error=%lu diagnostic=0x%08lX\n",
+                error, state.Reserved);
+            UfProcStopEventReceiver();
+            return 1;
+        }
+        UfProcStopEventReceiver();
+        error = UfProcQueryState(&state);
+        if (error != ERROR_SUCCESS || ((state.Reserved >> 16) & 0xffu) != 1) {
+            fwprintf(stderr, L"수신 중지 후 핸들 정리 검증 실패 error=%lu\n", error);
+            return 1;
+        }
+        wprintf(L"연결·조회·서명 대기 취소·수신 재시작 시험 %lu/3 성공\n", index + 1);
+    }
+    return 0;
+}
+
 static unsigned long
 SetMismatchedPathPolicy(
     const wchar_t* ProcessName,
@@ -152,13 +185,18 @@ RunSelfTest(
         return 1;
     }
 
+    error = UfProcStartEventReceiver(OnProcessEvent, NULL);
+    if (error != ERROR_SUCCESS) {
+        PrintError(L"정책 적용 전 이벤트 수신 시작", error);
+        goto Exit;
+    }
+    Sleep(200);
     error = SetMismatchedPathPolicy(probeName, sourcePath);
     if (error != ERROR_SUCCESS) {
         PrintError(L"시험 전체 경로 불일치 정책 등록", error);
         goto Exit;
     }
     policyInstalled = 1;
-    (void)UfProcStartEventReceiver(OnProcessEvent, NULL);
 
     ZeroMemory(&startupInfo, sizeof(startupInfo));
     ZeroMemory(&processInformation, sizeof(processInformation));
@@ -214,6 +252,7 @@ PrintUsage(
     wprintf(
         L"UF_ProcessControlTest 사용법\n"
         L"  --self-test\n"
+        L"  --connection-test (정책 변경 없이 연결·취소 반복 시험)\n"
         L"  --state\n"
         L"  --clear\n"
         L"  --block-path <실행 파일 전체 경로> (정책 등록 호환 명령)\n"
@@ -239,7 +278,23 @@ int wmain(
         return 1;
     }
 
-    if (_wcsicmp(argv[1], L"--self-test") == 0 && argc == 2) {
+    if (_wcsicmp(argv[1], L"--connection-test") == 0 && argc == 2) {
+        DWORD testResult = 1;
+        HANDLE thread = CreateThread(NULL, 0, RunConnectionTest, NULL, 0, NULL);
+        if (thread == NULL) {
+            PrintError(L"연결 시험 스레드 생성", GetLastError());
+            exitCode = 1;
+        } else {
+            if (WaitForSingleObject(thread, 15000) != WAIT_OBJECT_0) {
+                fwprintf(stderr, L"연결 시험이 15초 안에 반환되지 않았습니다.\n");
+                /* 교착된 시험 DLL의 종료 경로로 다시 들어가지 않습니다. */
+                ExitProcess(ERROR_TIMEOUT);
+            }
+            GetExitCodeThread(thread, &testResult);
+            CloseHandle(thread);
+            exitCode = (int)testResult;
+        }
+    } else if (_wcsicmp(argv[1], L"--self-test") == 0 && argc == 2) {
         exitCode = RunSelfTest();
     } else if (_wcsicmp(argv[1], L"--state") == 0 && argc == 2) {
         UF_PROC_STATE_REPLY state;
