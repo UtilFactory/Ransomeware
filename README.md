@@ -60,7 +60,10 @@ WDK 10.0.28000 설치에는 `Microsoft.DriverKit.Build.Tasks.17.0.dll`이 없고
 `18.0.dll`만 포함될 수 있습니다. 드라이버 프로젝트는 VS2022에서 빌드할 때만
 WDK 작업 버전을 18.0으로 선택하도록 호환 설정되어 있습니다.
 
-각 프로젝트는 빌드 후 주요 결과물을 구성별 공용 폴더에 복사합니다. 앞으로
+각 프로젝트는 빌드 후 주요 결과물을 구성별 공용 폴더에 복사합니다. 솔루션 파일을
+통해 빌드해야 `$(SolutionDir)`가 저장소 루트로 설정되어 네이티브 DLL이 공용
+폴더에 최신 상태로 복사됩니다. 프로젝트 파일 하나만 직접 빌드할 때는 다음처럼
+`/p:SolutionDir=<저장소 루트>\\`를 지정하십시오. 앞으로
 솔루션에 추가하는 신규 프로젝트에도 같은 규칙을 필수로 적용합니다.
 
 ```text
@@ -77,6 +80,7 @@ WPF EXE·DLL·실행 구성 파일이 생성됩니다. PDB는 각 프로젝트�
 실행 경로를 기준으로 기록하므로 세 로그를 한 폴더에서 확인할 수 있습니다.
 
 - `uf_fltwarp.log`: `uf_fltwarp.dll`의 연결·정책·이벤트 처리 로그
+- `uf_procwarp.log`: `uf_procwarp.dll`의 연결·IOCTL·정책 적용 단계 로그
 - `UF_FileFilterTest.log`: C 시험 프로그램의 시작·명령·오류 로그
 - `RansomUtilFactory.UI.log`: WPF UI의 초기화·버튼 동작·예외 로그
 - `uf_fltwarp.bootstrap.log`: 네이티브 DLL 초기화가 멈출 때 단계 확인용 보조 로그
