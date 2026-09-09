@@ -11,6 +11,7 @@ internal static class ProcessNativeMethods
     internal const uint EventCreate = 1;
     internal const uint EventExit = 2;
     internal const uint EventAccess = 3;
+    internal const uint ActionObserved = 1;
     internal const uint ActionBlocked = 2;
 
     internal static void ValidateAbi()

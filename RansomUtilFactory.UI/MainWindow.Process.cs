@@ -473,23 +473,11 @@ public partial class MainWindow
     {
         ProcessNativeMethods.ProcessEvent processEvent =
             Marshal.PtrToStructure<ProcessNativeMethods.ProcessEvent>(eventPointer);
-        DateTime time = DateTime.FromFileTimeUtc(unchecked((long)processEvent.SystemTime100ns))
-            .ToLocalTime();
-        ProcessEventLog log = new(
-            time.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-            processEvent.Type switch
-            {
-                ProcessNativeMethods.EventCreate => "실행",
-                ProcessNativeMethods.EventExit => "종료",
-                ProcessNativeMethods.EventAccess => "접근",
-                _ => "기타"
-            },
-            processEvent.Action == ProcessNativeMethods.ActionBlocked ? "차단" : "감시",
-            processEvent.ProcessId,
-            processEvent.RequesterProcessId,
-            processEvent.TargetProcessId,
-            $"0x{processEvent.DesiredAccess:X8}",
-            processEvent.Image ?? string.Empty);
+        ProcessEventLog? log = ProcessEventLog.FromEvent(processEvent);
+        if (log is null)
+        {
+            return;
+        }
         _pendingProcessEventLogs.Enqueue(log);
         while (_pendingProcessEventLogs.Count > MaxPendingProcessEventLogs &&
                _pendingProcessEventLogs.TryDequeue(out _))
@@ -572,13 +560,3 @@ public sealed class ProcessRuleEntry(uint ruleId, uint matchMode, string image)
         ? "전체 경로"
         : "파일 이름";
 }
-
-public sealed record ProcessEventLog(
-    string Time,
-    string Type,
-    string Action,
-    uint ProcessId,
-    uint RequesterProcessId,
-    uint TargetProcessId,
-    string DesiredAccess,
-    string Image);

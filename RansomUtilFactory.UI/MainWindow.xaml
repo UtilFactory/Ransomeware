@@ -251,19 +251,30 @@
                         </Grid>
                     </Grid>
 
-                    <GroupBox Grid.Row="2" Header="프로세스 실행·접근 이벤트 로그" Padding="8">
+                    <GroupBox Grid.Row="2" Header="정책에 등록된 프로세스 실행 로그 (차단 / 통과)" Padding="8">
                         <DataGrid ItemsSource="{Binding ProcessEventLogs}" AutoGenerateColumns="False"
                                   IsReadOnly="True" CanUserAddRows="False"
                                   EnableRowVirtualization="True">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="시각" Binding="{Binding Time}" Width="145" />
-                                <DataGridTextColumn Header="구분" Binding="{Binding Type}" Width="65" />
-                                <DataGridTextColumn Header="결과" Binding="{Binding Action}" Width="65" />
+                                <DataGridTextColumn Header="시각" Binding="{Binding Time}" Width="175" />
+                                <DataGridTextColumn Header="프로세스명" Binding="{Binding ProcessName}" Width="160" />
+                                <DataGridTextColumn Header="실행 결과" Binding="{Binding Action}" Width="80">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Action}" Value="차단">
+                                                    <Setter Property="Foreground" Value="#B91C1C" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Action}" Value="통과">
+                                                    <Setter Property="Foreground" Value="#15803D" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
                                 <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="70" />
-                                <DataGridTextColumn Header="요청 PID" Binding="{Binding RequesterProcessId}" Width="80" />
-                                <DataGridTextColumn Header="대상 PID" Binding="{Binding TargetProcessId}" Width="80" />
-                                <DataGridTextColumn Header="권한" Binding="{Binding DesiredAccess}" Width="95" />
-                                <DataGridTextColumn Header="실행 파일" Binding="{Binding Image}" Width="*" />
+                                <DataGridTextColumn Header="실행 파일 경로" Binding="{Binding Image}" Width="*" />
                             </DataGrid.Columns>
                         </DataGrid>
                     </GroupBox>
