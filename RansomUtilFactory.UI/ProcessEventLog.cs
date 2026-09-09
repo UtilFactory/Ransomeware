@@ -9,11 +9,13 @@ public sealed record ProcessEventLog(
     uint ProcessId,
     string Image)
 {
-    internal static ProcessEventLog? FromEvent(ProcessNativeMethods.ProcessEvent processEvent)
+    internal static ProcessEventLog? FromEvent(
+        ProcessNativeMethods.ProcessEvent processEvent,
+        AppliedProcessLogPolicy? appliedPolicy)
     {
-        // 규칙 ID는 커널이 실행 당시 적용 정책의 프로세스명과 일치하면 설정합니다.
-        // UI에서 편집 중인 목록 대신 이 값을 사용해야 적용 실패·정책 교체 시에도 정확합니다.
-        if (processEvent.Type != ProcessNativeMethods.EventCreate || processEvent.RuleId == 0)
+        // 현재 UI 연결에서 적용에 성공한 정책만 표시합니다. 이전 커널 정책은 포함하지 않습니다.
+        if (processEvent.Type != ProcessNativeMethods.EventCreate ||
+            appliedPolicy is null || !appliedPolicy.Matches(processEvent))
         {
             return null;
         }
@@ -32,5 +34,21 @@ public sealed record ProcessEventLog(
             },
             processEvent.ProcessId,
             image);
+    }
+}
+
+internal sealed class AppliedProcessLogPolicy(
+    IEnumerable<KeyValuePair<uint, string>> rules,
+    ulong appliedAt)
+{
+    private readonly Dictionary<uint, string> _names = rules.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+    internal bool Matches(ProcessNativeMethods.ProcessEvent processEvent)
+    {
+        // 수신 큐에 남아 있는 적용 이전 이벤트와 편집 목록의 미적용 규칙을 제외합니다.
+        return processEvent.RuleId != 0 && processEvent.SystemTime100ns >= appliedAt &&
+            _names.TryGetValue(processEvent.RuleId, out string? name) &&
+            string.Equals(name, Path.GetFileName(processEvent.Image ?? string.Empty),
+                StringComparison.OrdinalIgnoreCase);
     }
 }

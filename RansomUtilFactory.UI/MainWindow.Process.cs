@@ -21,6 +21,9 @@ public partial class MainWindow
     private readonly ConcurrentQueue<ProcessEventLog> _pendingProcessEventLogs = new();
     private int _processLogDrainScheduled;
     private int _processPolicyApplyRunning;
+    private readonly object _processLogGate = new();
+    private AppliedProcessLogPolicy? _appliedProcessLogPolicy;
+    private int _processConnectionVersion;
 
     public ObservableCollection<ProcessRuleEntry> ProcessRules { get; } = [];
     public ObservableCollection<ProcessEventLog> ProcessEventLogs { get; } = [];
@@ -287,6 +290,9 @@ public partial class MainWindow
 
     private void DisconnectProcessControl()
     {
+        ++_processConnectionVersion;
+        SetAppliedProcessLogPolicy(null);
+        ProcessPolicyStatusText.Text = "로그 표시 중지: 연결 후 정책을 적용하십시오.";
         if (_processReceiverStarted)
         {
             ProcessNativeMethods.UfProcStopEventReceiver();
@@ -325,7 +331,9 @@ public partial class MainWindow
         }
 
         ApplyProcessPolicyButton.IsEnabled = false;
+        int connectionVersion = _processConnectionVersion;
         ProcessPolicyStatusText.Text = "프로세스 정책 적용 중...";
+        List<KeyValuePair<uint, string>> submittedRules = [];
         List<IntPtr> strings = [];
         IntPtr rulesBuffer = IntPtr.Zero;
         try
@@ -340,6 +348,7 @@ public partial class MainWindow
                     string processName = rule.MatchMode == ProcessNativeMethods.MatchFullPath
                         ? Path.GetFileName(rule.Image)
                         : rule.Image;
+                    submittedRules.Add(new(rule.RuleId, processName));
                     IntPtr processNamePointer = Marshal.StringToHGlobalUni(processName);
                     strings.Add(processNamePointer);
                     IntPtr processPathPointer = IntPtr.Zero;
@@ -424,10 +433,19 @@ public partial class MainWindow
             UiLogger.Info($"프로세스 정책 네이티브 호출 완료 GetLastError={error}");
             if (error != ProcessNativeMethods.ErrorSuccess)
             {
+                ProcessPolicyStatusText.Text = $"정책 적용 실패 (GetLastError={error}): 로그 표시 기준은 변경되지 않았습니다.";
                 ShowProcessNativeError("프로세스 정책 적용", error);
                 return;
             }
-            ProcessPolicyStatusText.Text = $"프로세스 실행 허용 정책 적용됨: {ProcessRules.Count}개";
+            if (!_processConnected || connectionVersion != _processConnectionVersion)
+            {
+                ProcessPolicyStatusText.Text = "연결이 변경되어 로그 표시를 시작하지 않았습니다. 정책을 다시 적용하십시오.";
+                return;
+            }
+            SetAppliedProcessLogPolicy(new AppliedProcessLogPolicy(
+                submittedRules, (ulong)DateTime.UtcNow.ToFileTimeUtc()));
+            UiLogger.Info($"프로세스 로그 표시 정책 갱신: 적용 성공한 규칙 {submittedRules.Count}개");
+            ProcessPolicyStatusText.Text = $"프로세스 실행 허용 정책 적용됨: {submittedRules.Count}개 · 이후 실행부터 로그 표시";
         }
         finally
         {
@@ -446,6 +464,12 @@ public partial class MainWindow
 
     private void ClearProcessPolicy_Click(object sender, RoutedEventArgs e)
     {
+        if (Volatile.Read(ref _processPolicyApplyRunning) != 0)
+        {
+            MessageBox.Show("정책 적용이 완료된 후 초기화하십시오.", "프로세스 정책",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (!_processConnected)
         {
             MessageBox.Show("먼저 프로세스 드라이버에 연결하십시오.", "프로세스 정책",
@@ -458,7 +482,19 @@ public partial class MainWindow
             ShowProcessNativeError("프로세스 정책 초기화", error);
             return;
         }
-        ProcessPolicyStatusText.Text = "프로세스 실행 허용 정책을 초기화했습니다.";
+        SetAppliedProcessLogPolicy(null);
+        ProcessPolicyStatusText.Text = "프로세스 정책을 초기화했습니다. 다시 적용할 때까지 로그 표시를 중지합니다.";
+    }
+
+    private void SetAppliedProcessLogPolicy(AppliedProcessLogPolicy? policy)
+    {
+        // 수신 콜백과 정책 전환을 직렬화하여 이전 이벤트가 초기화 후 다시 들어오지 않게 합니다.
+        lock (_processLogGate)
+        {
+            _appliedProcessLogPolicy = policy;
+            while (_pendingProcessEventLogs.TryDequeue(out _)) { }
+        }
+        ProcessEventLogs.Clear();
     }
 
     private void ClearProcessLog_Click(object sender, RoutedEventArgs e)
@@ -473,15 +509,18 @@ public partial class MainWindow
     {
         ProcessNativeMethods.ProcessEvent processEvent =
             Marshal.PtrToStructure<ProcessNativeMethods.ProcessEvent>(eventPointer);
-        ProcessEventLog? log = ProcessEventLog.FromEvent(processEvent);
-        if (log is null)
+        lock (_processLogGate)
         {
-            return;
-        }
-        _pendingProcessEventLogs.Enqueue(log);
-        while (_pendingProcessEventLogs.Count > MaxPendingProcessEventLogs &&
-               _pendingProcessEventLogs.TryDequeue(out _))
-        {
+            ProcessEventLog? log = ProcessEventLog.FromEvent(processEvent, _appliedProcessLogPolicy);
+            if (log is null)
+            {
+                return;
+            }
+            _pendingProcessEventLogs.Enqueue(log);
+            while (_pendingProcessEventLogs.Count > MaxPendingProcessEventLogs &&
+                   _pendingProcessEventLogs.TryDequeue(out _))
+            {
+            }
         }
         ScheduleProcessLogDrain();
     }
