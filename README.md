@@ -134,6 +134,16 @@ sc.exe stop UF_ProcessFilterFactory
 ```
 
 관리자 권한 없이 새 일반 파일에서 구간 판정과 전후 SHA-256을 검사합니다.
+검사점이 설정된 Hyper-V Win11 게스트에서만 별도로 폐기용 VHDX 손상 재현을 실행할 수
+있습니다. 이 모드는 기존 디스크 경로를 받지 않고 새 VHDX의 FAT32/NTFS 부트 섹터만
+변경하며, 현재 스토리지 보호 드라이버가 아직 없어 차단 검증은 수행하지 않습니다.
+
+```powershell
+.\x64\Debug\bin\UF_BootProtectionTest.exe --vhdx-damage FAT32 --confirm-disposable-vhdx
+.\x64\Debug\bin\UF_BootProtectionTest.exe --vhdx-damage NTFS --confirm-disposable-vhdx
+```
+
+자세한 사전 조건과 결과 파일은 [`부팅 영역 보호 시험 프로그램`](docs/부팅영역보호_시험프로그램.md)을 참조합니다.
 실제 디스크·기존 파일을 입력받지 않으며 신규 드라이버, UI 알림·종료·격리까지
 시험하는 프로그램은 아닙니다. [사용법과 검증 범위](docs/부팅영역보호_시험프로그램.md)를 참고하십시오.
 
