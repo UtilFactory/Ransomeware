@@ -31,6 +31,7 @@ public partial class MainWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        InitializeBootControl();
         try
         {
             UiLogger.Info("메인 창 로드 시작");
@@ -85,6 +86,7 @@ public partial class MainWindow : Window
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         UiLogger.Info("메인 창 종료 시작");
+        ShutdownBootControl();
         ShutdownProcessControl();
         DisconnectDriver();
         NativeMethods.UfFltShutdown();

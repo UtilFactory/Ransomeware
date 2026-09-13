@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CommonBinDir>$(MSBuildThisFileDirectory)..\..\x64\$(Configuration)\bin\</CommonBinDir>
+  </PropertyGroup>
+  <Target Name="CopyBootNativeChecksToCommonBin" AfterTargets="Build">
+    <ItemGroup>
+      <BootNativeCheckOutput Include="$(TargetDir)BootNativeChecks.exe" />
+      <BootNativeCheckOutput Include="$(TargetDir)BootNativeChecks.dll" />
+      <BootNativeCheckOutput Include="$(TargetDir)BootNativeChecks.deps.json" />
+      <BootNativeCheckOutput Include="$(TargetDir)BootNativeChecks.runtimeconfig.json" />
+    </ItemGroup>
+    <MakeDir Directories="$(CommonBinDir)" />
+    <Copy SourceFiles="@(BootNativeCheckOutput)" DestinationFolder="$(CommonBinDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

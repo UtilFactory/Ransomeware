@@ -415,8 +415,10 @@ static void Usage(void)
          "  --vhdx-self-test  VHDX 부트 영역 파서 합성 시험 (파일·장치 I/O 없음)\n"
          "  --vhdx-damage FAT32|NTFS --confirm-disposable-vhdx\n"
          "                Hyper-V 게스트 관리자 전용: 새 VHDX의 부트 섹터 실제 손상\n"
+         "  --vhdx-protection-test FAT32|NTFS --confirm-disposable-vhdx\n"
+         "                UI 필터 등록·방어 시작·정지와 함께 실제 차단/손상 비교\n"
          "기존 장치·파일 경로 입력은 지원하지 않습니다. --all에는 실제 손상 시험이 포함되지 않습니다.\n"
-         "커널 드라이버 차단, FAT32/NTFS 파싱, UI 알림·종료·격리는 검증하지 않습니다.");
+         "--vhdx-protection-test만 커널 상태·차단 계수·섹터 보존을 함께 검증합니다. 자동 종료·격리는 검증하지 않습니다.");
 }
 
 int wmain(int Argc, wchar_t** Argv)
@@ -428,6 +430,10 @@ int wmain(int Argc, wchar_t** Argv)
         wcscmp(Argv[3], L"--confirm-disposable-vhdx") == 0 &&
         (wcscmp(Argv[2], L"FAT32") == 0 || wcscmp(Argv[2], L"NTFS") == 0))
         return UfBootVhdxDamage(wcscmp(Argv[2], L"FAT32") == 0);
+    if (Argc == 4 && wcscmp(Argv[1], L"--vhdx-protection-test") == 0 &&
+        wcscmp(Argv[3], L"--confirm-disposable-vhdx") == 0 &&
+        (wcscmp(Argv[2], L"FAT32") == 0 || wcscmp(Argv[2], L"NTFS") == 0))
+        return UfBootVhdxProtectionTest(wcscmp(Argv[2], L"FAT32") == 0);
     if (Argc == 1 || (Argc == 2 && wcscmp(Argv[1], L"--help") == 0)) { Usage(); return 0; }
     if (Argc != 2) { Usage(); return 2; }
     self = wcscmp(Argv[1], L"--self-test") == 0 || wcscmp(Argv[1], L"--all") == 0;

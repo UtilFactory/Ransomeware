@@ -19,6 +19,8 @@
     <ProjectReference Include="..\UF_FileFilterFactory\UF_FileFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\uf_procwarp\uf_procwarp.vcxproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\UF_ProcessFilterFactory\UF_ProcessFilterFactory.vcxproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\UF_BootProtectionFactory\UF_BootProtectionFactory.vcxproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\uf_bootwarp\uf_bootwarp.vcxproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,6 +30,9 @@
   </ItemGroup>
 
   <Target Name="CopyNativeLibrary" AfterTargets="Build">
+    <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_bootwarp.dll"
+          DestinationFolder="$(OutDir)"
+          Condition="Exists('$(SolutionDir)x64\$(Configuration)\uf_bootwarp.dll')" />
     <Copy SourceFiles="$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll"
           DestinationFolder="$(OutDir)"
           Condition="Exists('$(SolutionDir)x64\$(Configuration)\uf_fltwarp.dll')" />
@@ -44,6 +49,13 @@
           DestinationFolder="$(OutDir)Drivers\UF_ProcessFilterFactory\%(RecursiveDir)"
           SkipUnchangedFiles="true"
           Condition="'@(ProcessDriverPackage)' != ''" />
+  </Target>
+
+  <Target Name="CopyBootDriverPackage" AfterTargets="Build">
+    <ItemGroup><BootDriverPackage Include="$(SolutionDir)x64\$(Configuration)\UF_BootProtectionFactory\**\*.*" /></ItemGroup>
+    <Copy SourceFiles="@(BootDriverPackage)"
+          DestinationFolder="$(OutDir)Drivers\UF_BootProtectionFactory\%(RecursiveDir)"
+          SkipUnchangedFiles="true" Condition="'@(BootDriverPackage)' != ''" />
   </Target>
 
   <Target Name="CopyFileDriverPackage" AfterTargets="Build">
