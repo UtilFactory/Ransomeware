@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
 
@@ -14,16 +15,23 @@ public partial class MainWindow
     private int _fileConnectionVersion;
     private Task _fileLifecycleTask = Task.CompletedTask;
 
-    private async Task<T> RunFileNativeAsync<T>(Func<T> operation)
+    private async Task<T> RunFileNativeAsync<T>(Func<T> operation, string? diagnosticContext = null)
     {
+        Stopwatch? gateWatch = diagnosticContext is null ? null : Stopwatch.StartNew();
+        if (diagnosticContext is not null)
+            UiLogger.Info($"{diagnosticContext} stage=gate-wait {FileProtectionDiagnostics.ThreadIdentity()}");
         await _fileNativeGate.WaitAsync();
         try
         {
+            if (diagnosticContext is not null)
+                UiLogger.Info($"{diagnosticContext} stage=gate-enter waitMs={gateWatch!.ElapsedMilliseconds}");
             return await Task.Run(operation);
         }
         finally
         {
             _fileNativeGate.Release();
+            if (diagnosticContext is not null)
+                UiLogger.Info($"{diagnosticContext} stage=gate-release elapsedMs={gateWatch!.ElapsedMilliseconds}");
         }
     }
 
@@ -56,6 +64,8 @@ public partial class MainWindow
         ++_fileConnectionVersion;
         SetConnectionState(false);
         UiLogger.Info("메인 창 종료: 진행 중인 파일 요청을 마친 후 연결만 해제합니다. 보호 정지는 요청하지 않습니다.");
+        UiLogger.Info($"[FileBoot lifecycle] stage=closing connectionVersion={_fileConnectionVersion} " +
+            $"initialized={_fileInitialized} bootBusy={_bootOperationRunning} lifecycleBusy={_fileConnectionOperationRunning}");
         try
         {
             await _fileLifecycleTask;
@@ -201,6 +211,8 @@ public partial class MainWindow
         if (_closing) return;
         _connected = error == NativeMethods.ErrorSuccess;
         ++_fileConnectionVersion;
+        UiLogger.Info($"[FileBoot lifecycle] stage=connection-result connectionVersion={_fileConnectionVersion} " +
+            $"connected={_connected} initialized={_fileInitialized} {FileProtectionDiagnostics.Error(error)}");
         SetConnectionState(_connected);
         if (!_connected)
         {
@@ -219,6 +231,8 @@ public partial class MainWindow
         // 늦은 조회/설정 결과와 이미 대기 중인 이벤트를 먼저 무효화한다.
         _connected = false;
         ++_fileConnectionVersion;
+        UiLogger.Info($"[FileBoot lifecycle] stage=disconnect-invalidate connectionVersion={_fileConnectionVersion} " +
+            $"initialized={_fileInitialized} bootBusy={_bootOperationRunning}");
         SetConnectionState(false);
         await RunFileNativeAsync(() =>
         {

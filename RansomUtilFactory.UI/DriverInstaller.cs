@@ -60,9 +60,10 @@ internal static class DriverInstaller
         if (!DiInstallDriverW(IntPtr.Zero, infPath, 0, out bool rebootRequired))
         {
             int error = Marshal.GetLastWin32Error();
-            UiLogger.Error($"DiInstallDriverW 실패 error={error}");
+            UiLogger.Error($"[FileDriverInstall] DiInstallDriverW 실패 GetLastError={error} (0x{error:X8}) rebootRequired={rebootRequired} inf={infPath}");
             return new(false, $"드라이버 패키지 설치 실패: {FormatError(error)}", rebootRequired, error);
         }
+        UiLogger.Info($"[FileDriverInstall] DiInstallDriverW 성공 rebootRequired={rebootRequired} inf={infPath} · 패키지 설치 성공만으로 새 SYS의 메모리 로드를 보장하지 않습니다.");
 
         if (!TryEnableLoadDriverPrivilege(out int privilegeError))
         {
@@ -71,7 +72,11 @@ internal static class DriverInstaller
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
-        UiLogger.Info($"FilterLoad 결과 hresult={result} error={loadError}");
+        UiLogger.Info($"[FileDriverInstall] FilterLoad 결과 service={FileDriverServiceName} hresult=0x{result:X8} GetLastError={loadError} (0x{loadError:X8}) rebootRequired={rebootRequired}");
+        if (loadError == ErrorAlreadyExists || loadError == ErrorServiceAlreadyRunning)
+        {
+            UiLogger.Warn("[FileDriverInstall] 이미 로드된 드라이버입니다. 기존 메모리 이미지가 유지될 수 있으며 이번 요청은 강제 언로드하지 않습니다.");
+        }
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -92,7 +97,11 @@ internal static class DriverInstaller
         }
         int result = FilterLoad(FileDriverServiceName);
         int loadError = HResultToWin32(result);
-        UiLogger.Info($"설치된 미니필터 FilterLoad 결과 hresult={result} error={loadError}");
+        UiLogger.Info($"[FileDriverLoad] FilterLoad 결과 service={FileDriverServiceName} hresult=0x{result:X8} GetLastError={loadError} (0x{loadError:X8}) alreadyLoaded={loadError == ErrorAlreadyExists || loadError == ErrorServiceAlreadyRunning}");
+        if (loadError == ErrorAlreadyExists || loadError == ErrorServiceAlreadyRunning)
+        {
+            UiLogger.Warn("[FileDriverLoad] 이미 로드됨은 디스크에 복사한 최신 SYS가 메모리에 로드되었다는 확인 결과가 아닙니다.");
+        }
         if (result < 0 &&
             loadError != ErrorAlreadyExists &&
             loadError != ErrorServiceAlreadyRunning)
@@ -117,7 +126,7 @@ internal static class DriverInstaller
         }
         int unloadResult = FilterUnload(FileDriverServiceName);
         int unloadError = HResultToWin32(unloadResult);
-        UiLogger.Info($"FilterUnload 결과 hresult={unloadResult} error={unloadError}");
+        UiLogger.Info($"[FileDriverRemove] FilterUnload 결과 service={FileDriverServiceName} hresult=0x{unloadResult:X8} GetLastError={unloadError} (0x{unloadError:X8})");
         if (unloadResult < 0 && unloadError != ErrorServiceNotActive && unloadError != ErrorNotFound)
         {
             UiLogger.Error($"미니필터 언로드 실패 error={unloadError}");

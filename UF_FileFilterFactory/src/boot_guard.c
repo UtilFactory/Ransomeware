@@ -68,7 +68,11 @@ UfBootIsController(_In_opt_ PEPROCESS Process)
 VOID
 UfBootSetEnabled(_In_ BOOLEAN Enabled)
 {
-    InterlockedExchange(&gUfBootEnabled, Enabled ? 1 : 0);
+    LONG previous = InterlockedExchange(&gUfBootEnabled, Enabled ? 1 : 0);
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+        "[UF][control] stage=boot-enabled-change previous=%ld requested=%lu pending=%ld pid=%lu tid=%lu\n",
+        previous, (ULONG)(Enabled != FALSE), InterlockedCompareExchange(&gUfBootPending, 0, 0),
+        HandleToULong(PsGetCurrentProcessId()), HandleToULong(PsGetCurrentThreadId()));
 }
 
 VOID
@@ -87,10 +91,17 @@ UfBootQuery(_Out_ UF_BOOT_PROTECTION_STATE* State)
 VOID
 UfBootShutdown(VOID)
 {
+    ULONGLONG started = KeQueryInterruptTime();
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+        "[UF][control] stage=boot-shutdown-enter pending=%ld\n",
+        InterlockedCompareExchange(&gUfBootPending, 0, 0));
     InterlockedExchange(&gUfBootEnabled, 0);
     UfBootSetController(NULL);
     /* 보류 읽기 및 교체 버퍼의 쓰기 완료 전에 모듈 메모리를 해제하지 않는다. */
     ExWaitForRundownProtectionRelease(&gUfBootRundown);
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+        "[UF][control] stage=boot-shutdown-exit elapsedMs=%I64u\n",
+        (KeQueryInterruptTime() - started) / 10000ULL);
 }
 
 static VOID

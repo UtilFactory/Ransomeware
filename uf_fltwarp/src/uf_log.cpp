@@ -20,6 +20,15 @@ namespace {
 SRWLOCK gLogLock = SRWLOCK_INIT;
 log4cpp::Category* gCategory = nullptr;
 
+// 진단 기록이 호출자의 Win32 오류 값을 바꾸지 않도록 모든 공개 로그 진입점에서 보존합니다.
+class UfLogLastErrorGuard {
+public:
+    UfLogLastErrorGuard() : savedError_(GetLastError()) {}
+    ~UfLogLastErrorGuard() { SetLastError(savedError_); }
+private:
+    DWORD savedError_;
+};
+
 std::string UfUtf8FromWide(const std::wstring& Text)
 {
     if (Text.empty()) {
@@ -104,10 +113,10 @@ void UfLogWriteFile(int Level, const char* Message)
     char line[1280] = {};
     int lineLength = _snprintf_s(
         line, sizeof(line), _TRUNCATE,
-        "%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] %s\r\n",
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] [pid=%lu tid=%lu] %s\r\n",
         time.wYear, time.wMonth, time.wDay,
         time.wHour, time.wMinute, time.wSecond, time.wMilliseconds,
-        UfLogLevelName(Level), Message);
+        UfLogLevelName(Level), GetCurrentProcessId(), GetCurrentThreadId(), Message);
     if (lineLength > 0) {
         DWORD written = 0;
         WriteFile(file, line, (DWORD)lineLength, &written, nullptr);
@@ -141,6 +150,7 @@ void UfLogInitializeLocked()
 
 extern "C" void UfLogBootstrapWrite(const char* Message)
 {
+    UfLogLastErrorGuard preserveLastError;
     if (Message == nullptr) {
         return;
     }
@@ -179,6 +189,7 @@ extern "C" void UfLogBootstrapWrite(const char* Message)
 
 extern "C" void UfLogInitialize(void)
 {
+    UfLogLastErrorGuard preserveLastError;
     UfLogBootstrapWrite("UfLogInitialize 진입");
     AcquireSRWLockExclusive(&gLogLock);
     UfLogBootstrapWrite("UfLogInitialize 잠금 획득");
@@ -190,6 +201,7 @@ extern "C" void UfLogInitialize(void)
 
 extern "C" void UfLogShutdown(void)
 {
+    UfLogLastErrorGuard preserveLastError;
     AcquireSRWLockExclusive(&gLogLock);
     if (gCategory != nullptr) {
         gCategory->removeAllAppenders();
@@ -201,6 +213,7 @@ extern "C" void UfLogShutdown(void)
 
 extern "C" void UfLogWrite(int Level, const char* Message)
 {
+    UfLogLastErrorGuard preserveLastError;
     if (Message == nullptr) {
         return;
     }
@@ -215,6 +228,7 @@ extern "C" void UfLogWrite(int Level, const char* Message)
 
 extern "C" void UfLogWriteFormat(int Level, const char* Format, ...)
 {
+    UfLogLastErrorGuard preserveLastError;
     char message[1024] = {};
     va_list arguments;
     if (Format == nullptr) {

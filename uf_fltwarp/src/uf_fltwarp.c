@@ -12,6 +12,11 @@
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
 #endif
 
+/* CRT 선택과 빌드 구성을 혼동하지 않도록 프로젝트가 전달한 진단 표식을 사용한다. */
+#ifndef UF_FLT_BUILD_CONFIGURATION
+#define UF_FLT_BUILD_CONFIGURATION "Unspecified"
+#endif
+
 typedef struct _UF_USER_EVENT_MESSAGE {
     FILTER_MESSAGE_HEADER Header;
     UF_FILE_EVENT_V2 Event;
@@ -28,6 +33,7 @@ static HANDLE gReceiverThread = NULL;
 static UF_FLT_EVENT_CALLBACK gCallback = NULL;
 static UF_FLT_EVENT_CALLBACK_V2 gCallbackV2 = NULL;
 static void* gCallbackContext = NULL;
+static __declspec(align(8)) volatile LONG64 gSendRequestSequence = 0;
 
 // 커널 응답이 반환되지 않아도 사용자 모드 호출이 무한 대기하지 않도록 제한합니다.
 #define UF_FILTER_SEND_TIMEOUT_MILLISECONDS 5000UL
@@ -41,6 +47,11 @@ typedef struct _UF_SEND_CONTEXT {
     unsigned long ReplySize;
     unsigned long BytesReturned;
     HRESULT Result;
+    ULONGLONG RequestId;
+    ULONGLONG StartedAt;
+    unsigned long Command;
+    unsigned long Version;
+    DWORD CallerThreadId;
     volatile LONG References;
 } UF_SEND_CONTEXT;
 
@@ -59,6 +70,77 @@ UfResultFromHresult(HRESULT Result)
         return HRESULT_CODE(Result);
     }
     return (unsigned long)Result;
+}
+
+static const char*
+UfCommandName(unsigned long Command)
+{
+    switch (Command) {
+    case UfCommandReplacePolicy: return "ReplacePolicy";
+    case UfCommandClearPolicy: return "ClearPolicy";
+    case UfCommandQueryState: return "QueryState";
+    case UfCommandSetProcessTrust: return "SetProcessTrust";
+    case UfCommandSetBootProtection: return "SetBootProtection";
+    case UfCommandQueryBootProtection: return "QueryBootProtection";
+    default: return "Unknown";
+    }
+}
+
+static void
+UfLogModuleIdentity(const char* Reason)
+{
+    HMODULE module = NULL;
+    wchar_t modulePath[MAX_PATH] = { 0 };
+    char utf8Path[MAX_PATH * 3 + 1] = { 0 };
+    DWORD savedError = GetLastError();
+    DWORD pathError = ERROR_SUCCESS;
+    DWORD pathLength = 0;
+    int converted = 0;
+
+    // 같은 이름의 DLL이 다른 배포 폴더에서 로드되는 상황을 구분합니다.
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCWSTR)&gLock, &module)) {
+        pathError = GetLastError();
+    } else {
+        pathLength = GetModuleFileNameW(module, modulePath, (DWORD)_countof(modulePath));
+        if (pathLength == 0 || pathLength >= _countof(modulePath)) {
+            pathError = GetLastError();
+            if (pathError == ERROR_SUCCESS) {
+                pathError = ERROR_INSUFFICIENT_BUFFER;
+            }
+        } else {
+            converted = WideCharToMultiByte(CP_UTF8, 0, modulePath, -1,
+                utf8Path, (int)sizeof(utf8Path), NULL, NULL);
+            if (converted == 0) {
+                pathError = GetLastError();
+            }
+        }
+    }
+    UfLogWriteFormat(UfLogInfo,
+        "FileBootDiag=20260914-1 reason=%s build=%s %s configuration=%s pid=%lu tid=%lu protocol=%lu headerBytes=%lu setBytes=%lu stateBytes=%lu timeoutMs=%lu",
+        Reason, __DATE__, __TIME__,
+        UF_FLT_BUILD_CONFIGURATION,
+        GetCurrentProcessId(), GetCurrentThreadId(), (unsigned long)UF_PROTOCOL_VERSION,
+        (unsigned long)sizeof(UF_MESSAGE_HEADER), (unsigned long)sizeof(UF_SET_BOOT_PROTECTION),
+        (unsigned long)sizeof(UF_BOOT_PROTECTION_STATE), UF_FILTER_SEND_TIMEOUT_MILLISECONDS);
+    UfLogWriteFormat(pathError == ERROR_SUCCESS ? UfLogInfo : UfLogWarn,
+        "파일 통신 DLL 실제 로드 경로 reason=%s modulePath=%s pathChars=%lu GetLastError=%lu (0x%08lX)",
+        Reason, converted > 0 ? utf8Path : "(조회 실패 또는 경로 길이 초과)",
+        pathLength, pathError, pathError);
+    SetLastError(savedError);
+}
+
+static void
+UfLogBootCompatibilityHint(ULONGLONG RequestId, unsigned long Command, unsigned long Result)
+{
+    if ((Command == UfCommandSetBootProtection || Command == UfCommandQueryBootProtection) &&
+        (Result == ERROR_INVALID_FUNCTION || Result == ERROR_NOT_SUPPORTED ||
+         Result == ERROR_REVISION_MISMATCH)) {
+        UfLogWriteFormat(UfLogWarn,
+            "부트 명령 호환성 확인 필요 requestId=%llu command=%lu GetLastError=%lu (0x%08lX): 미지원 명령 또는 DLL/SYS 버전 불일치 후보이며 원인 확정 아님. 실제 로드 SYS와 커널 명령 수신 로그를 함께 확인",
+            RequestId, Command, Result, Result);
+    }
 }
 
 static unsigned long
@@ -191,6 +273,7 @@ UfFltInitialize(void)
     UfLogInitialize();
     UfLogBootstrapWrite("UfLogInitialize 호출 완료");
     UfLogWrite(UfLogInfo, "uf_fltwarp 초기화");
+    UfLogModuleIdentity("Initialize");
     UfLogBootstrapWrite("UfLogWrite 호출 완료");
     return ERROR_SUCCESS;
 }
@@ -206,26 +289,41 @@ UfFltShutdown(void)
 unsigned long __stdcall
 UfFltConnect(void)
 {
-    HANDLE port;
+    HANDLE port = INVALID_HANDLE_VALUE;
     HRESULT result;
+    unsigned long error;
+    DWORD lastErrorSnapshot;
+    ULONGLONG startedAt = GetTickCount64();
 
+    UfLogModuleIdentity("Connect");
+    UfLogWriteFormat(UfLogInfo, "파일 통신 연결 시작 tid=%lu stage=lock-wait", GetCurrentThreadId());
     AcquireSRWLockExclusive(&gLock);
     if (gPort != INVALID_HANDLE_VALUE) {
+        port = gPort;
         ReleaseSRWLockExclusive(&gLock);
-        UfLogWrite(UfLogDebug, "통신 포트가 이미 연결됨");
+        UfLogWriteFormat(UfLogDebug,
+            "통신 포트가 이미 연결됨 port=%p elapsedMs=%llu GetLastError=%lu",
+            port, GetTickCount64() - startedAt, (unsigned long)ERROR_ALREADY_EXISTS);
         return ERROR_ALREADY_EXISTS;
     }
+    UfLogWriteFormat(UfLogDebug,
+        "파일 통신 연결 stage=FilterConnectCommunicationPort-enter elapsedMs=%llu", GetTickCount64() - startedAt);
     result = FilterConnectCommunicationPort(
         UF_FILTER_PORT_NAME, 0, NULL, 0, NULL, &port);
+    lastErrorSnapshot = GetLastError();
+    error = UfResultFromHresult(result);
     if (FAILED(result)) {
         ReleaseSRWLockExclusive(&gLock);
-        result = (HRESULT)UfResultFromHresult(result);
-        UfLogWriteFormat(UfLogError, "통신 포트 연결 실패 error=%lu", (unsigned long)result);
-        return (unsigned long)result;
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 연결 실패 stage=FilterConnectCommunicationPort-return HRESULT=0x%08lX GetLastError=%lu (0x%08lX) lastErrorSnapshot=%lu elapsedMs=%llu",
+            (unsigned long)result, error, error, lastErrorSnapshot, GetTickCount64() - startedAt);
+        return error;
     }
     gPort = port;
     ReleaseSRWLockExclusive(&gLock);
-    UfLogWrite(UfLogInfo, "통신 포트 연결 성공");
+    UfLogWriteFormat(UfLogInfo,
+        "파일 통신 연결 성공 port=%p HRESULT=0x%08lX GetLastError=%lu elapsedMs=%llu",
+        port, (unsigned long)result, error, GetTickCount64() - startedAt);
     return ERROR_SUCCESS;
 }
 
@@ -233,7 +331,9 @@ void __stdcall
 UfFltDisconnect(void)
 {
     HANDLE port;
+    ULONGLONG startedAt = GetTickCount64();
 
+    UfLogWriteFormat(UfLogInfo, "파일 통신 연결 해제 시작 tid=%lu stage=receiver-stop", GetCurrentThreadId());
     UfFltStopEventReceiver();
     AcquireSRWLockExclusive(&gLock);
     port = gPort;
@@ -241,7 +341,9 @@ UfFltDisconnect(void)
     ReleaseSRWLockExclusive(&gLock);
     if (port != INVALID_HANDLE_VALUE) {
         CloseHandle(port);
-        UfLogWrite(UfLogInfo, "통신 포트 연결 해제");
+        UfLogWriteFormat(UfLogInfo, "통신 포트 연결 해제 port=%p elapsedMs=%llu", port, GetTickCount64() - startedAt);
+    } else {
+        UfLogWriteFormat(UfLogDebug, "파일 통신 연결 해제: 기존 연결 없음 elapsedMs=%llu", GetTickCount64() - startedAt);
     }
 }
 
@@ -330,7 +432,14 @@ static DWORD WINAPI
 UfSendRequestThread(_In_ void* Parameter)
 {
     UF_SEND_CONTEXT* context = (UF_SEND_CONTEXT*)Parameter;
+    DWORD lastErrorSnapshot;
+    unsigned long error;
 
+    UfLogWriteFormat(UfLogDebug,
+        "파일 통신 requestId=%llu stage=FilterSendMessage-enter command=%lu(%s) version=%lu inputBytes=%lu outputCapacity=%lu callerTid=%lu workerTid=%lu elapsedMs=%llu",
+        context->RequestId, context->Command, UfCommandName(context->Command), context->Version,
+        context->RequestSize, context->ReplySize, context->CallerThreadId,
+        GetCurrentThreadId(), GetTickCount64() - context->StartedAt);
     context->BytesReturned = 0;
     context->Result = FilterSendMessage(
         context->Port,
@@ -339,6 +448,13 @@ UfSendRequestThread(_In_ void* Parameter)
         context->ReplySize == 0 ? NULL : context->Reply,
         context->ReplySize,
         &context->BytesReturned);
+    // FilterSendMessage의 판정 기준은 HRESULT이며 마지막 오류 스냅숏은 참고 값입니다.
+    lastErrorSnapshot = GetLastError();
+    error = UfResultFromHresult(context->Result);
+    UfLogWriteFormat(FAILED(context->Result) ? UfLogError : UfLogDebug,
+        "파일 통신 requestId=%llu stage=FilterSendMessage-return command=%lu HRESULT=0x%08lX GetLastError=%lu (0x%08lX) lastErrorSnapshot=%lu returnedBytes=%lu outputCapacity=%lu elapsedMs=%llu",
+        context->RequestId, context->Command, (unsigned long)context->Result, error, error,
+        lastErrorSnapshot, context->BytesReturned, context->ReplySize, GetTickCount64() - context->StartedAt);
     UfLogBootstrapWrite("FilterSendMessage 종료");
     SetEvent(context->CompleteEvent);
     UfReleaseSendContext(context);
@@ -346,32 +462,47 @@ UfSendRequestThread(_In_ void* Parameter)
 }
 
 static unsigned long
-UfSendRequest(
+UfSendRequestWithId(
     const void* Request,
     unsigned long RequestSize,
     void* Reply,
     unsigned long ReplySize,
-    unsigned long* ReplySizeReturned)
+    unsigned long* ReplySizeReturned,
+    ULONGLONG* RequestIdReturned)
 {
     UF_SEND_CONTEXT* context = NULL;
     HANDLE port;
     HANDLE duplicatedPort = NULL;
     HANDLE thread = NULL;
     DWORD waitResult;
+    DWORD workerThreadId = 0;
+    DWORD waitError;
     const UF_MESSAGE_HEADER* header = (const UF_MESSAGE_HEADER*)Request;
     unsigned long result;
+    ULONGLONG requestId = (ULONGLONG)InterlockedIncrement64(&gSendRequestSequence);
+    ULONGLONG startedAt = GetTickCount64();
+
+    if (RequestIdReturned != NULL) {
+        *RequestIdReturned = requestId;
+    }
 
     if (Request == NULL || RequestSize < sizeof(UF_MESSAGE_HEADER)) {
-        UfLogWrite(UfLogError, "잘못된 통신 요청 인수");
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=input-validation inputBytes=%lu outputCapacity=%lu GetLastError=%lu",
+            requestId, RequestSize, ReplySize, (unsigned long)ERROR_INVALID_PARAMETER);
         return ERROR_INVALID_PARAMETER;
     }
-    UfLogWriteFormat(UfLogDebug, "통신 요청 command=%lu size=%lu",
-        header->Command, RequestSize);
+    UfLogWriteFormat(UfLogDebug,
+        "파일 통신 requestId=%llu stage=lock-wait command=%lu(%s) version=%lu headerSize=%lu reserved=%lu inputBytes=%lu outputCapacity=%lu callerTid=%lu timeoutMs=%lu",
+        requestId, header->Command, UfCommandName(header->Command), header->Version, header->Size,
+        header->Reserved, RequestSize, ReplySize, GetCurrentThreadId(), UF_FILTER_SEND_TIMEOUT_MILLISECONDS);
     AcquireSRWLockShared(&gLock);
     port = gPort;
     if (port == INVALID_HANDLE_VALUE) {
         ReleaseSRWLockShared(&gLock);
-        UfLogWrite(UfLogWarn, "통신 요청 실패: 연결되지 않음");
+        UfLogWriteFormat(UfLogWarn,
+            "파일 통신 requestId=%llu stage=connection-check 연결되지 않음 GetLastError=%lu elapsedMs=%llu",
+            requestId, (unsigned long)ERROR_INVALID_HANDLE, GetTickCount64() - startedAt);
         return ERROR_INVALID_HANDLE;
     }
     if (!DuplicateHandle(
@@ -381,14 +512,21 @@ UfSendRequest(
         result = GetLastError();
         ReleaseSRWLockShared(&gLock);
         UfLogWriteFormat(UfLogError,
-            "통신 포트 핸들 복제 실패 error=%lu", result);
+            "파일 통신 requestId=%llu stage=DuplicateHandle-failed GetLastError=%lu (0x%08lX) elapsedMs=%llu",
+            requestId, result, result, GetTickCount64() - startedAt);
         return result;
     }
     ReleaseSRWLockShared(&gLock);
+    UfLogWriteFormat(UfLogDebug,
+        "파일 통신 requestId=%llu stage=DuplicateHandle-complete sourcePort=%p requestPort=%p elapsedMs=%llu",
+        requestId, port, duplicatedPort, GetTickCount64() - startedAt);
 
     context = (UF_SEND_CONTEXT*)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*context));
     if (context == NULL) {
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=context-allocation GetLastError=%lu",
+            requestId, (unsigned long)ERROR_NOT_ENOUGH_MEMORY);
         CloseHandle(duplicatedPort);
         return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -396,8 +534,16 @@ UfSendRequest(
     context->RequestSize = RequestSize;
     context->ReplySize = ReplySize;
     context->References = 2;
+    context->RequestId = requestId;
+    context->StartedAt = startedAt;
+    context->Command = header->Command;
+    context->Version = header->Version;
+    context->CallerThreadId = GetCurrentThreadId();
     context->Request = HeapAlloc(GetProcessHeap(), 0, RequestSize);
     if (context->Request == NULL) {
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=request-allocation bytes=%lu GetLastError=%lu",
+            requestId, RequestSize, (unsigned long)ERROR_NOT_ENOUGH_MEMORY);
         UfReleaseSendContext(context);
         UfReleaseSendContext(context);
         return ERROR_NOT_ENOUGH_MEMORY;
@@ -406,6 +552,9 @@ UfSendRequest(
     if (ReplySize != 0) {
         context->Reply = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ReplySize);
         if (context->Reply == NULL) {
+            UfLogWriteFormat(UfLogError,
+                "파일 통신 requestId=%llu stage=reply-allocation bytes=%lu GetLastError=%lu",
+                requestId, ReplySize, (unsigned long)ERROR_NOT_ENOUGH_MEMORY);
             UfReleaseSendContext(context);
             UfReleaseSendContext(context);
             return ERROR_NOT_ENOUGH_MEMORY;
@@ -414,33 +563,49 @@ UfSendRequest(
     context->CompleteEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (context->CompleteEvent == NULL) {
         result = GetLastError();
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=CreateEvent-failed GetLastError=%lu (0x%08lX)", requestId, result, result);
         UfReleaseSendContext(context);
         UfReleaseSendContext(context);
         return result;
     }
 
     UfLogBootstrapWrite("FilterSendMessage 시작");
-    thread = CreateThread(NULL, 0, UfSendRequestThread, context, 0, NULL);
+    UfLogWriteFormat(UfLogDebug, "파일 통신 requestId=%llu stage=CreateThread-enter elapsedMs=%llu",
+        requestId, GetTickCount64() - startedAt);
+    thread = CreateThread(NULL, 0, UfSendRequestThread, context, 0, &workerThreadId);
     if (thread == NULL) {
         result = GetLastError();
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=CreateThread-failed GetLastError=%lu (0x%08lX)", requestId, result, result);
         UfReleaseSendContext(context);
         UfReleaseSendContext(context);
         return result;
     }
+    UfLogWriteFormat(UfLogDebug,
+        "파일 통신 requestId=%llu stage=completion-wait workerTid=%lu timeoutMs=%lu elapsedMs=%llu",
+        requestId, workerThreadId, UF_FILTER_SEND_TIMEOUT_MILLISECONDS, GetTickCount64() - startedAt);
     waitResult = WaitForSingleObject(
         context->CompleteEvent, UF_FILTER_SEND_TIMEOUT_MILLISECONDS);
+    waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
     if (waitResult == WAIT_TIMEOUT) {
         // 작업 스레드는 자체 참조를 보유하므로 요청 버퍼를 안전하게 정리합니다.
         UfLogBootstrapWrite("FilterSendMessage 시간 제한");
+        UfLogWriteFormat(UfLogWarn,
+            "파일 통신 requestId=%llu stage=completion-timeout command=%lu waitResult=0x%08lX GetLastError=%lu elapsedMs=%llu: 커널 완료 여부 미확인, 작업 참조 유지, 자동 재전송 없음",
+            requestId, header->Command, waitResult, (unsigned long)ERROR_TIMEOUT, GetTickCount64() - startedAt);
         CloseHandle(thread);
         UfReleaseSendContext(context);
         return ERROR_TIMEOUT;
     }
     if (waitResult != WAIT_OBJECT_0) {
-        result = GetLastError();
+        result = waitError == ERROR_SUCCESS ? ERROR_GEN_FAILURE : waitError;
+        UfLogWriteFormat(UfLogError,
+            "파일 통신 requestId=%llu stage=completion-wait-failed waitResult=0x%08lX GetLastError=%lu (0x%08lX) elapsedMs=%llu",
+            requestId, waitResult, result, result, GetTickCount64() - startedAt);
         CloseHandle(thread);
         UfReleaseSendContext(context);
-        return result == ERROR_SUCCESS ? ERROR_GEN_FAILURE : result;
+        return result;
     }
 
     WaitForSingleObject(thread, INFINITE);
@@ -453,12 +618,24 @@ UfSendRequest(
     }
     result = SUCCEEDED(context->Result)
         ? ERROR_SUCCESS : UfResultFromHresult(context->Result);
-    if (FAILED(context->Result)) {
-        UfLogWriteFormat(UfLogError, "통신 요청 실패 command=%lu error=%lu",
-            header->Command, result);
-    }
+    UfLogWriteFormat(FAILED(context->Result) ? UfLogError : UfLogDebug,
+        "파일 통신 requestId=%llu stage=request-complete command=%lu HRESULT=0x%08lX GetLastError=%lu (0x%08lX) returnedBytes=%lu outputCapacity=%lu elapsedMs=%llu",
+        requestId, header->Command, (unsigned long)context->Result, result, result,
+        context->BytesReturned, context->ReplySize, GetTickCount64() - startedAt);
+    UfLogBootCompatibilityHint(requestId, header->Command, result);
     UfReleaseSendContext(context);
     return result;
+}
+
+static unsigned long
+UfSendRequest(
+    const void* Request,
+    unsigned long RequestSize,
+    void* Reply,
+    unsigned long ReplySize,
+    unsigned long* ReplySizeReturned)
+{
+    return UfSendRequestWithId(Request, RequestSize, Reply, ReplySize, ReplySizeReturned, NULL);
 }
 
 static int
@@ -942,8 +1119,13 @@ UfFltSetBootProtection(int Enabled)
 {
     UF_SET_BOOT_PROTECTION request;
     unsigned long result;
+    ULONGLONG requestId = 0;
+    ULONGLONG startedAt = GetTickCount64();
 
+    UfLogModuleIdentity("SetBootProtection");
     if (Enabled != 0 && Enabled != 1) {
+        UfLogWriteFormat(UfLogError,
+            "파일 필터 부트 보호 설정 입력 거부 enabled=%d GetLastError=%lu", Enabled, (unsigned long)ERROR_INVALID_PARAMETER);
         return ERROR_INVALID_PARAMETER;
     }
     ZeroMemory(&request, sizeof(request));
@@ -951,9 +1133,13 @@ UfFltSetBootProtection(int Enabled)
     request.Header.Size = sizeof(request);
     request.Header.Command = UfCommandSetBootProtection;
     request.Enabled = (unsigned long)Enabled;
-    result = UfSendRequest(&request, sizeof(request), NULL, 0, NULL);
+    UfLogWriteFormat(UfLogInfo,
+        "파일 필터 부트 보호 설정 시작 enabled=%d command=%lu version=%lu inputBytes=%lu outputCapacity=0 tid=%lu",
+        Enabled, request.Header.Command, request.Header.Version, (unsigned long)sizeof(request), GetCurrentThreadId());
+    result = UfSendRequestWithId(&request, sizeof(request), NULL, 0, NULL, &requestId);
     UfLogWriteFormat(result == ERROR_SUCCESS ? UfLogInfo : UfLogError,
-        "파일 필터 부트 보호 설정 enabled=%d GetLastError=%lu", Enabled, result);
+        "파일 필터 부트 보호 설정 완료 requestId=%llu enabled=%d GetLastError=%lu (0x%08lX) elapsedMs=%llu: 실제 상태는 후속 조회로 확인",
+        requestId, Enabled, result, result, GetTickCount64() - startedAt);
     return result;
 }
 
@@ -964,8 +1150,13 @@ UfFltQueryBootProtection(UF_BOOT_PROTECTION_STATE* State)
     UF_BOOT_PROTECTION_STATE reply;
     unsigned long bytesReturned = 0;
     unsigned long result;
+    ULONGLONG requestId = 0;
+    ULONGLONG startedAt = GetTickCount64();
 
+    UfLogModuleIdentity("QueryBootProtection");
     if (State == NULL) {
+        UfLogWriteFormat(UfLogError,
+            "파일 필터 부트 보호 상태 출력 인수 거부 GetLastError=%lu", (unsigned long)ERROR_INVALID_PARAMETER);
         return ERROR_INVALID_PARAMETER;
     }
     // 실패한 조회의 잔여 값이 보호 중/정지로 표시되지 않도록 먼저 지웁니다.
@@ -975,24 +1166,37 @@ UfFltQueryBootProtection(UF_BOOT_PROTECTION_STATE* State)
     request.Version = UF_PROTOCOL_VERSION;
     request.Size = sizeof(request);
     request.Command = UfCommandQueryBootProtection;
-    result = UfSendRequest(&request, sizeof(request), &reply, sizeof(reply), &bytesReturned);
+    UfLogWriteFormat(UfLogDebug,
+        "파일 필터 부트 보호 상태 조회 시작 command=%lu version=%lu inputBytes=%lu outputCapacity=%lu tid=%lu",
+        request.Command, request.Version, (unsigned long)sizeof(request), (unsigned long)sizeof(reply), GetCurrentThreadId());
+    result = UfSendRequestWithId(&request, sizeof(request), &reply, sizeof(reply), &bytesReturned, &requestId);
     if (result == ERROR_SUCCESS &&
         (bytesReturned != sizeof(reply) || reply.Version != UF_PROTOCOL_VERSION ||
          reply.Size != sizeof(reply))) {
         result = ERROR_REVISION_MISMATCH;
+        UfLogWriteFormat(UfLogError,
+            "파일 필터 부트 보호 응답 ABI 검증 실패 requestId=%llu returnedBytes=%lu expectedBytes=%lu replyVersion=%lu expectedVersion=%lu replySize=%lu GetLastError=%lu",
+            requestId, bytesReturned, (unsigned long)sizeof(reply), reply.Version,
+            (unsigned long)UF_PROTOCOL_VERSION, reply.Size, result);
     }
     if (result == ERROR_SUCCESS &&
         (reply.Enabled > 1 || reply.ProtectedBytes != UF_BOOT_PROTECTED_BYTES)) {
         result = ERROR_INVALID_DATA;
+        UfLogWriteFormat(UfLogError,
+            "파일 필터 부트 보호 응답 값 검증 실패 requestId=%llu enabled=%lu protectedBytes=%lu expectedProtectedBytes=%lu GetLastError=%lu",
+            requestId, reply.Enabled, reply.ProtectedBytes, (unsigned long)UF_BOOT_PROTECTED_BYTES, result);
     }
     if (result == ERROR_SUCCESS) {
         *State = reply;
         UfLogWriteFormat(UfLogDebug,
-            "파일 필터 부트 보호 상태 enabled=%lu bytes=%lu inspected=%llu blocked=%llu failures=%llu",
-            reply.Enabled, reply.ProtectedBytes, reply.InspectedWrites,
-            reply.BlockedWrites, reply.InspectionFailures);
+            "파일 필터 부트 보호 상태 조회 완료 requestId=%llu version=%lu size=%lu returnedBytes=%lu enabled=%lu bytes=%lu inspected=%llu blocked=%llu failures=%llu GetLastError=0 elapsedMs=%llu",
+            requestId, reply.Version, reply.Size, bytesReturned, reply.Enabled,
+            reply.ProtectedBytes, reply.InspectedWrites, reply.BlockedWrites,
+            reply.InspectionFailures, GetTickCount64() - startedAt);
     } else {
-        UfLogWriteFormat(UfLogWarn, "파일 필터 부트 보호 상태 조회 실패 GetLastError=%lu", result);
+        UfLogWriteFormat(UfLogWarn,
+            "파일 필터 부트 보호 상태 조회 실패 requestId=%llu returnedBytes=%lu GetLastError=%lu (0x%08lX) elapsedMs=%llu: 상태 미확인, 보호 정지를 뜻하지 않음",
+            requestId, bytesReturned, result, result, GetTickCount64() - startedAt);
     }
     return result;
 }

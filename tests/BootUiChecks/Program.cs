@@ -61,6 +61,33 @@ Check(FileProtectionPresentation.Error(1460).Contains("GetLastError=1460 (0x0000
 Check(FileProtectionPresentation.ErrorCode(new EntryPointNotFoundException()) == 127, "구 DLL 미지원 API 오류");
 Check(FileProtectionPresentation.ErrorCode(new DllNotFoundException()) == 126, "DLL 없음 오류");
 Check(FileProtectionPresentation.ErrorCode(new TimeoutException()) == 1460, "시간 초과 예외 코드");
+Check(FileProtectionDiagnostics.Command(true) == "Start" && FileProtectionDiagnostics.Command(false) == "Stop" &&
+    FileProtectionDiagnostics.Command(null) == "Query", "시작·정지·조회 진단 구분");
+Check(FileProtectionDiagnostics.Error(1) == "GetLastError=1 (0x00000001)", "오류 1의 십진수·16진수 원본 기록");
+Check(FileProtectionDiagnostics.Error(uint.MaxValue) == "GetLastError=4294967295 (0xFFFFFFFF)", "진단 오류 코드 부호 없이 보존");
+Check(FileProtectionDiagnostics.State(state).Contains("version=2 size=40 enabled=1 protectedBytes=2048") &&
+    FileProtectionDiagnostics.State(state).Contains("inspectedWrites=18446744073709551615 blockedWrites=2500 inspectionFailures=3"),
+    "진단 상태 버전·크기·활성·64비트 누적 수 보존");
+Check(FileProtectionDiagnostics.State(default).Contains("version=0 size=0 enabled=0 protectedBytes=0"),
+    "실패 시 초기화 상태도 검증이나 성공 해석 없이 원본 기록");
+Check(FileProtectionDiagnostics.NormalizeServiceImagePath(@"\??\C:\Windows\System32\drivers\UF_FileFilterFactory.sys") ==
+    @"C:\Windows\System32\drivers\UF_FileFilterFactory.sys", "서비스 로컬 NT 경로 진단 정규화");
+Check(FileProtectionDiagnostics.NormalizeServiceImagePath("\"C:\\Windows\\System32\\drivers\\UF_FileFilterFactory.sys\"") ==
+    @"C:\Windows\System32\drivers\UF_FileFilterFactory.sys", "따옴표로 둘러싼 서비스 경로 진단 정규화");
+Check(FileProtectionDiagnostics.NormalizeServiceImagePath(@"\\server\share\driver.sys") is null &&
+    FileProtectionDiagnostics.NormalizeServiceImagePath(@"\??\UNC\server\share\driver.sys") is null &&
+    FileProtectionDiagnostics.NormalizeServiceImagePath(@"\Device\HarddiskVolume1\driver.sys") is null &&
+    FileProtectionDiagnostics.NormalizeServiceImagePath(@"relative\driver.sys") is null,
+    "진단이 UNC·장치·상대 경로를 읽지 않음");
+Check(FileProtectionDiagnostics.NormalizeServiceImagePath(@"%TEMP%\driver.sys") is null,
+    "진단에서 임의 환경변수 확장 거부");
+Check(FileProtectionDiagnostics.NormalizeServiceImagePath(@"\SystemRoot\System32\drivers\UF_FileFilterFactory.sys") ==
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"System32\drivers\UF_FileFilterFactory.sys") &&
+    FileProtectionDiagnostics.NormalizeServiceImagePath(@"%SystemRoot%\System32\drivers\UF_FileFilterFactory.sys") ==
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"System32\drivers\UF_FileFilterFactory.sys"),
+    "서비스 SystemRoot 경로의 안전한 진단 정규화");
+Check(FileProtectionDiagnostics.ThreadIdentity().Contains($"pid={Environment.ProcessId} nativeThreadId=") &&
+    FileProtectionDiagnostics.RuntimeIdentity().Contains("mvid="), "사용자 로그·네이티브 로그 연계 PID·스레드·배포 MVID");
 foreach (string name in new[] { "UfFltSetBootProtection", "UfFltQueryBootProtection" })
 {
     MethodInfo method = typeof(NativeMethods).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)!;

@@ -4,6 +4,17 @@ PFLT_FILTER gUfFilter;
 PFLT_PORT gUfServerPort;
 PFLT_PORT gUfClientPort;
 
+/* 요청·수명 주기 진단만 출력하며 파일 내용이나 커널 주소는 기록하지 않는다. */
+/* Release WDK에서 비활성화할 수 있는 날짜 매크로 대신 명시적 진단 개정을 사용한다. */
+#if DBG
+#define UF_CONTROL_BUILD "file-boot-trace-20260914.1/Debug"
+#else
+#define UF_CONTROL_BUILD "file-boot-trace-20260914.1/Release"
+#endif
+#define UF_CONTROL_TRACE(...) \
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[UF][control] " __VA_ARGS__)
+static volatile LONG gUfControlRequestSequence;
+
 static NTSTATUS UfUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
 static NTSTATUS UfInstanceSetup(
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
@@ -332,11 +343,18 @@ UfPortConnect(
     UNREFERENCED_PARAMETER(SizeOfContext);
     *ConnectionCookie = NULL;
 
+    UF_CONTROL_TRACE("stage=connect-enter build=%s pid=%lu tid=%lu protocol=%lu bootSet=%lu bootQuery=%lu\n",
+        UF_CONTROL_BUILD, HandleToULong(PsGetCurrentProcessId()),
+        HandleToULong(PsGetCurrentThreadId()), (ULONG)UF_PROTOCOL_VERSION,
+        (ULONG)UfCommandSetBootProtection, (ULONG)UfCommandQueryBootProtection);
+
     if (InterlockedCompareExchangePointer(
             (PVOID volatile*)&gUfClientPort, ClientPort, NULL) != NULL) {
+        UF_CONTROL_TRACE("stage=connect-exit status=0x%08lx\n", (ULONG)STATUS_DEVICE_BUSY);
         return STATUS_DEVICE_BUSY;
     }
     UfBootSetController(PsGetCurrentProcess());
+    UF_CONTROL_TRACE("stage=connect-exit status=0x%08lx\n", (ULONG)STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 
@@ -344,12 +362,16 @@ static VOID
 UfPortDisconnect(_In_opt_ PVOID ConnectionCookie)
 {
     UNREFERENCED_PARAMETER(ConnectionCookie);
+    UF_CONTROL_TRACE("stage=disconnect-enter pid=%lu protectionUnchanged=1\n",
+        HandleToULong(PsGetCurrentProcessId()));
     UfBootSetController(NULL);
     FltCloseClientPort(gUfFilter, &gUfClientPort);
+    UF_CONTROL_TRACE("stage=disconnect-exit\n");
 }
 
 static NTSTATUS
 UfPortMessageUnsafe(
+    _In_ ULONG TraceId,
     _In_opt_ PVOID PortCookie,
     _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer,
     _In_ ULONG InputBufferLength,
@@ -363,12 +385,18 @@ UfPortMessageUnsafe(
     *ReturnOutputBufferLength = 0;
 
     if (InputBuffer == NULL || InputBufferLength < sizeof(UF_MESSAGE_HEADER)) {
+        UF_CONTROL_TRACE("requestId=%lu stage=header-reject inputBytes=%lu requiredBytes=%lu\n",
+            TraceId, InputBufferLength, (ULONG)sizeof(UF_MESSAGE_HEADER));
         return STATUS_INVALID_PARAMETER;
     }
     RtlCopyMemory(&capturedHeader, InputBuffer, sizeof(capturedHeader));
+    UF_CONTROL_TRACE("requestId=%lu stage=header command=%lu version=%lu size=%lu reserved=%lu\n",
+        TraceId, header->Command, header->Version, header->Size, header->Reserved);
     if (header->Version != UF_PROTOCOL_VERSION ||
         header->Size > InputBufferLength ||
         header->Size < sizeof(*header)) {
+        UF_CONTROL_TRACE("requestId=%lu stage=header-reject expectedVersion=%lu inputBytes=%lu\n",
+            TraceId, (ULONG)UF_PROTOCOL_VERSION, InputBufferLength);
         return STATUS_REVISION_MISMATCH;
     }
 
@@ -402,19 +430,27 @@ UfPortMessageUnsafe(
         UF_SET_BOOT_PROTECTION request;
         if (InputBufferLength != sizeof(request) || header->Size != sizeof(request) ||
             OutputBufferLength != 0) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-set-size-reject input=%lu header=%lu output=%lu expected=%lu\n",
+                TraceId, InputBufferLength, header->Size, OutputBufferLength, (ULONG)sizeof(request));
             return STATUS_INFO_LENGTH_MISMATCH;
         }
         /* 사용자 버퍼는 한 번 복사한 값만 검사하고 사용한다. */
         RtlCopyMemory(&request, InputBuffer, sizeof(request));
+        UF_CONTROL_TRACE("requestId=%lu stage=boot-set-captured enabled=%lu version=%lu size=%lu command=%lu headerReserved=%lu reserved=%lu\n",
+            TraceId, request.Enabled, request.Header.Version, request.Header.Size,
+            request.Header.Command, request.Header.Reserved, request.Reserved);
         if (request.Header.Version != UF_PROTOCOL_VERSION) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-set-version-reject\n", TraceId);
             return STATUS_REVISION_MISMATCH;
         }
         if (request.Header.Command != UfCommandSetBootProtection ||
             request.Header.Size != sizeof(request) || request.Header.Reserved != 0 ||
             request.Enabled > 1 || request.Reserved != 0) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-set-value-reject\n", TraceId);
             return STATUS_INVALID_PARAMETER;
         }
         UfBootSetEnabled(request.Enabled != 0);
+        UF_CONTROL_TRACE("requestId=%lu stage=boot-set-applied requestedEnabled=%lu\n", TraceId, request.Enabled);
         return STATUS_SUCCESS;
     }
 
@@ -422,24 +458,37 @@ UfPortMessageUnsafe(
     {
         UF_BOOT_PROTECTION_STATE state;
         if (InputBufferLength != sizeof(*header) || header->Size != sizeof(*header)) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-query-size-reject input=%lu header=%lu expected=%lu\n",
+                TraceId, InputBufferLength, header->Size, (ULONG)sizeof(*header));
             return STATUS_INFO_LENGTH_MISMATCH;
         }
         if (header->Reserved != 0) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-query-reserved-reject reserved=%lu\n",
+                TraceId, header->Reserved);
             return STATUS_INVALID_PARAMETER;
         }
         if (OutputBuffer == NULL || OutputBufferLength < sizeof(state)) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-query-buffer-reject output=%lu expected=%lu null=%lu\n",
+                TraceId, OutputBufferLength, (ULONG)sizeof(state), (ULONG)(OutputBuffer == NULL));
             return STATUS_BUFFER_TOO_SMALL;
         }
         if (OutputBufferLength != sizeof(state)) {
+            UF_CONTROL_TRACE("requestId=%lu stage=boot-query-output-size-reject output=%lu expected=%lu\n",
+                TraceId, OutputBufferLength, (ULONG)sizeof(state));
             return STATUS_INFO_LENGTH_MISMATCH;
         }
         UfBootQuery(&state);
         RtlCopyMemory(OutputBuffer, &state, sizeof(state));
         *ReturnOutputBufferLength = sizeof(state);
+        UF_CONTROL_TRACE("requestId=%lu stage=boot-query-reply version=%lu size=%lu enabled=%lu protectedBytes=%lu inspected=%I64u blocked=%I64u failures=%I64u\n",
+            TraceId, state.Version, state.Size, state.Enabled, state.ProtectedBytes,
+            state.InspectedWrites, state.BlockedWrites, state.InspectionFailures);
         return STATUS_SUCCESS;
     }
 
     default:
+        UF_CONTROL_TRACE("requestId=%lu stage=command-unsupported command=%lu build=%s\n",
+            TraceId, header->Command, UF_CONTROL_BUILD);
         return STATUS_INVALID_DEVICE_REQUEST;
     }
 }
@@ -453,20 +502,34 @@ UfPortMessage(
     _In_ ULONG OutputBufferLength,
     _Out_ PULONG ReturnOutputBufferLength)
 {
+    ULONG traceId = (ULONG)InterlockedIncrement(&gUfControlRequestSequence);
+    ULONGLONG started = KeQueryInterruptTime();
+    NTSTATUS status;
+    ULONG returned = 0;
+
+    UF_CONTROL_TRACE("requestId=%lu stage=message-enter pid=%lu tid=%lu irql=%lu inputBytes=%lu outputBytes=%lu\n",
+        traceId, HandleToULong(PsGetCurrentProcessId()), HandleToULong(PsGetCurrentThreadId()),
+        (ULONG)KeGetCurrentIrql(), InputBufferLength, OutputBufferLength);
     /* 필터 포트 버퍼의 접근 예외를 커널 경계에서 처리한다. */
     __try {
-        return UfPortMessageUnsafe(PortCookie, InputBuffer, InputBufferLength,
+        status = UfPortMessageUnsafe(traceId, PortCookie, InputBuffer, InputBufferLength,
             OutputBuffer, OutputBufferLength, ReturnOutputBufferLength);
+        returned = *ReturnOutputBufferLength;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
         *ReturnOutputBufferLength = 0;
-        return GetExceptionCode();
+        UF_CONTROL_TRACE("requestId=%lu stage=message-exception status=0x%08lx\n", traceId, (ULONG)status);
     }
+    UF_CONTROL_TRACE("requestId=%lu stage=message-exit status=0x%08lx returnedBytes=%lu elapsedMs=%I64u\n",
+        traceId, (ULONG)status, returned, (KeQueryInterruptTime() - started) / 10000ULL);
+    return status;
 }
 
 static NTSTATUS
 UfUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
 {
     UNREFERENCED_PARAMETER(Flags);
+    UF_CONTROL_TRACE("stage=unload-enter build=%s\n", UF_CONTROL_BUILD);
     if (gUfServerPort != NULL) {
         FltCloseCommunicationPort(gUfServerPort);
         gUfServerPort = NULL;
@@ -478,6 +541,7 @@ UfUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
     FltUnregisterFilter(gUfFilter);
     gUfFilter = NULL;
     UfPolicyClear();
+    UF_CONTROL_TRACE("stage=unload-exit\n");
     return STATUS_SUCCESS;
 }
 
@@ -490,16 +554,21 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     OBJECT_ATTRIBUTES objectAttributes;
 
     UNREFERENCED_PARAMETER(RegistryPath);
+    UF_CONTROL_TRACE("stage=driver-entry build=%s protocol=%lu headerBytes=%lu bootSetBytes=%lu bootStateBytes=%lu\n",
+        UF_CONTROL_BUILD, (ULONG)UF_PROTOCOL_VERSION, (ULONG)sizeof(UF_MESSAGE_HEADER),
+        (ULONG)sizeof(UF_SET_BOOT_PROTECTION), (ULONG)sizeof(UF_BOOT_PROTECTION_STATE));
     UfPolicyInitialize();
     UfBootInitialize();
 
     status = FltRegisterFilter(DriverObject, &gRegistration, &gUfFilter);
+    UF_CONTROL_TRACE("stage=register-filter status=0x%08lx\n", (ULONG)status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
 
     status = FltBuildDefaultSecurityDescriptor(
         &securityDescriptor, FLT_PORT_ALL_ACCESS);
+    UF_CONTROL_TRACE("stage=security-descriptor status=0x%08lx\n", (ULONG)status);
     if (!NT_SUCCESS(status)) {
         FltUnregisterFilter(gUfFilter);
         gUfFilter = NULL;
@@ -513,6 +582,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     status = FltCreateCommunicationPort(
         gUfFilter, &gUfServerPort, &objectAttributes, NULL,
         UfPortConnect, UfPortDisconnect, UfPortMessage, 1);
+    UF_CONTROL_TRACE("stage=create-port status=0x%08lx\n", (ULONG)status);
     FltFreeSecurityDescriptor(securityDescriptor);
     if (!NT_SUCCESS(status)) {
         FltUnregisterFilter(gUfFilter);
@@ -521,6 +591,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     }
 
     status = FltStartFiltering(gUfFilter);
+    UF_CONTROL_TRACE("stage=start-filtering status=0x%08lx\n", (ULONG)status);
     if (!NT_SUCCESS(status)) {
         FltCloseCommunicationPort(gUfServerPort);
         gUfServerPort = NULL;
@@ -531,5 +602,6 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
         FltUnregisterFilter(gUfFilter);
         gUfFilter = NULL;
     }
+    UF_CONTROL_TRACE("stage=driver-entry-exit status=0x%08lx\n", (ULONG)status);
     return status;
 }

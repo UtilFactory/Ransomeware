@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="../../RansomUtilFactory.UI/NativeMethods.cs" Link="NativeMethods.cs" />
     <Compile Include="../../RansomUtilFactory.UI/FileProtectionPresentation.cs" Link="FileProtectionPresentation.cs" />
+    <Compile Include="../../RansomUtilFactory.UI/FileProtectionDiagnostics.cs" Link="FileProtectionDiagnostics.cs" />
   </ItemGroup>
   <Target Name="CopyBootUiChecksToCommonBin" AfterTargets="Build">
     <ItemGroup>

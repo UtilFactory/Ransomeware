@@ -29,7 +29,7 @@
     <ClCompile>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
-      <PreprocessorDefinitions>UF_FLTWARP_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>UF_FLTWARP_EXPORTS;UF_FLT_BUILD_CONFIGURATION=&quot;$(Configuration)&quot;;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(SolutionDir)UF_FileFilterFactory\include;$(SolutionDir)third_party\log4cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
