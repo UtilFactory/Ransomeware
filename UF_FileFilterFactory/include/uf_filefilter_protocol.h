@@ -39,7 +39,9 @@ typedef enum _UF_COMMAND {
     UfCommandReplacePolicy = 1,
     UfCommandClearPolicy = 2,
     UfCommandQueryState = 3,
-    UfCommandSetProcessTrust = 4
+    UfCommandSetProcessTrust = 4,
+    UfCommandSetBootProtection = 5,
+    UfCommandQueryBootProtection = 6
 } UF_COMMAND;
 
 typedef enum _UF_RULE_MODE {
@@ -52,7 +54,9 @@ typedef enum _UF_EVENT_ACTION {
     UfEventObserved = 1,
     UfEventDenied = 2,
     UfEventTrustRequired = 3,
-    UfEventTrustRevoked = 4
+    UfEventTrustRevoked = 4,
+    UfEventBootDenied = 5,
+    UfEventBootInspectionFailed = 6
 } UF_EVENT_ACTION;
 
 typedef enum _UF_IO_OPERATION {
@@ -89,6 +93,24 @@ typedef struct _UF_MESSAGE_HEADER {
     unsigned long Command;
     unsigned long Reserved;
 } UF_MESSAGE_HEADER;
+
+// 기존 V2 구조체를 유지하면서 원본의 선두 영역 변경 보호 명령을 확장합니다.
+#define UF_BOOT_PROTECTED_BYTES 2048u
+typedef struct _UF_SET_BOOT_PROTECTION {
+    UF_MESSAGE_HEADER Header;
+    unsigned long Enabled;
+    unsigned long Reserved;
+} UF_SET_BOOT_PROTECTION;
+
+typedef struct _UF_BOOT_PROTECTION_STATE {
+    unsigned long Version;
+    unsigned long Size;
+    unsigned long Enabled;
+    unsigned long ProtectedBytes;
+    unsigned long long InspectedWrites;
+    unsigned long long BlockedWrites;
+    unsigned long long InspectionFailures;
+} UF_BOOT_PROTECTION_STATE;
 
 typedef struct _UF_PATH_RULE {
     unsigned long Mode;

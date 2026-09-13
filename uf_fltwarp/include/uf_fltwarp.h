@@ -111,6 +111,9 @@ UF_FLTWARP_API unsigned long __stdcall UfFltReplacePolicyV2(
 UF_FLTWARP_API unsigned long __stdcall UfFltClearPolicy(void);
 UF_FLTWARP_API unsigned long __stdcall UfFltQueryState(UF_STATE_REPLY* State);
 UF_FLTWARP_API unsigned long __stdcall UfFltQueryStateV2(UF_STATE_REPLY_V2* State);
+// 파일 필터의 선두 영역 보호는 폴더 정책과 독립적으로 시작·정지합니다.
+UF_FLTWARP_API unsigned long __stdcall UfFltSetBootProtection(int Enabled);
+UF_FLTWARP_API unsigned long __stdcall UfFltQueryBootProtection(UF_BOOT_PROTECTION_STATE* State);
 UF_FLTWARP_API unsigned long __stdcall UfFltStartEventReceiver(
     UF_FLT_EVENT_CALLBACK Callback,
     void* Context);

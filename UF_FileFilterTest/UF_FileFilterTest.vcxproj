@@ -43,6 +43,7 @@ if exist "$(CommonBinDir)$(TargetName).pdb" del /Q "$(CommonBinDir)$(TargetName)
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.c" />
+    <ClCompile Include="src\boot_guard_tests.c" />
     <ClCompile Include="..\uf_fltwarp\src\uf_log.cpp" />
   </ItemGroup>
   <ItemGroup>

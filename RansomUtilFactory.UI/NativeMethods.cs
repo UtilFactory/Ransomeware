@@ -12,6 +12,8 @@ internal static class NativeMethods
     internal const uint UfRuleMonitor = 1;
     internal const uint UfRuleProtected = 2;
     internal const uint UfEventDenied = 2;
+    internal const uint UfEventBootDenied = 5;
+    internal const uint UfEventBootInspectionFailed = 6;
     internal const ushort PfAccessRead = 0x0001;
     internal const ushort PfAccessWrite = 0x0002;
     internal const ushort PfAccessAll = 0x0003;
@@ -35,11 +37,32 @@ internal static class NativeMethods
             Marshal.SizeOf<ProtectedProcessInput>() != 24 ||
             Marshal.SizeOf<SignerInput>() != 40 ||
             Marshal.SizeOf<PolicyInputV2>() != 88 ||
-            Marshal.SizeOf<SignerIdentity>() != 632)
+            Marshal.SizeOf<SignerIdentity>() != 632 ||
+            Marshal.SizeOf<BootProtectionState>() != 40 ||
+            Marshal.OffsetOf<BootProtectionState>(nameof(BootProtectionState.InspectedWrites)).ToInt32() != 16)
         {
             throw new PlatformNotSupportedException("uf_fltwarp 통신 구조체의 크기가 x64 ABI와 일치하지 않습니다.");
         }
     }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 8)]
+    internal struct BootProtectionState
+    {
+        internal uint Version;
+        internal uint Size;
+        internal uint Enabled;
+        internal uint ProtectedBytes;
+        internal ulong InspectedWrites;
+        internal ulong BlockedWrites;
+        internal ulong InspectionFailures;
+    }
+
+    internal static BootProtectionState CreateBootProtectionState() => new()
+    {
+        Version = 2,
+        Size = 40,
+        ProtectedBytes = 2048
+    };
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct PathInput
@@ -252,6 +275,12 @@ internal static class NativeMethods
 
     [DllImport("uf_fltwarp.dll", CallingConvention = CallingConvention.StdCall)]
     internal static extern uint UfFltClearPolicy();
+
+    [DllImport("uf_fltwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfFltSetBootProtection([MarshalAs(UnmanagedType.Bool)] bool enabled);
+
+    [DllImport("uf_fltwarp.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint UfFltQueryBootProtection(ref BootProtectionState state);
 
     [DllImport("uf_fltwarp.dll", CallingConvention = CallingConvention.StdCall)]
     internal static extern uint UfFltStartEventReceiver(EventCallback callback, IntPtr context);

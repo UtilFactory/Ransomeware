@@ -63,11 +63,13 @@ if exist "$(CommonBinDir)$(TargetName).pdb" del /Q "$(CommonBinDir)$(TargetName)
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\driver.c" />
+    <ClCompile Include="src\boot_guard.c" />
     <ClCompile Include="src\policy.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\uf_filefilter_protocol.h" />
     <ClInclude Include="src\driver.h" />
+    <ClInclude Include="src\boot_guard_logic.h" />
   </ItemGroup>
   <ItemGroup>
     <Inf Include="UF_FileFilterFactory.inf" />

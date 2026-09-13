@@ -1,0 +1,121 @@
+﻿# MetisD 부트 영역 보호의 파일 미니필터 이관
+
+작성일: 2026-09-14 · 브랜치: `tsk/8/main`
+
+## 1. 요청과 기준 소스
+
+사용자 요청은 별도 디스크 드라이버를 제외하고 UI 디스크 탭을 삭제한 뒤, 사용자가 직접
+구현·악성코드 차단 검증한 MetisD 보호 코드를 현재 파일 필터로 이름을 바꾸어 이관하는 것이다.
+원본은 `J:\전책임백업EDrive\backup\Core\MetisD-Develop\Source\MetisD`에서 읽기만 했다.
+원본의 사용자 실검증 사실과 이번 이관본의 로컬 검증/VM 미검증 상태를 구분한다.
+
+## 2. 구성 변경
+
+- 파일 필터 `UF_FileFilterFactory.sys`, 파일 DLL `uf_fltwarp.dll`이 보호를 담당한다.
+- UI는 파일 제어/프로세스 제어 두 탭만 남긴다. 파일 제어 안에 선두 영역 보호 제어를 둔다.
+- `UF_BootProtectionFactory`, `uf_bootwarp`는 솔루션·UI 빌드 의존성과 배포 복사에서 제외한다.
+  소스는 비교·이력용으로 보관한다. 사용자의 기존 솔루션 폴더·Visual Studio 설정은 보존한다.
+- 이전 `--vhdx-protection-test`는 `ERROR_NOT_SUPPORTED(50)`으로 종료하며 디스크를 열지 않는다.
+  합성 시험과 폐기용 VHDX 도구 자체는 유지한다. 이번 이관은 VHDX 전용 보호가 아니다.
+- 설치되어 있는 이전 디스크 필터를 자동 제거하거나 시스템 UpperFilters를 바꾸지 않는다.
+  시험 VM에 남아 있다면 해당 장치 등록을 해제하고 재부팅 필요 여부를 확인해야 한다.
+
+## 3. 원본과 대응 함수
+
+| 원본 | 현재 구현 | 역할 |
+| --- | --- | --- |
+| `MetisPreWrite` | `UfPreOperation` → `UfBootPreWrite` | 원시 쓰기 선별과 선두 범위 검사 |
+| `GetInspectStatus_Mbr` | `UfBootInspectWorker` | 활성 상태·예외 확인, 내용 변경 판정과 차단 |
+| `IsWriteIrpModifyMbr` | `UfBootValidateTarget`, `UfBootPrefixDiffers` | 대상 확인, 기존 바이트와 요청 바이트 비교 |
+| `GetUserWriteBuffer` | 잠긴 MDL에서 스냅숏 생성 | 사용자 버퍼를 안전하게 비교하고 전달 |
+| `RUNNING_FLAG_PROTECT_MBR` | `UfBootSetEnabled`, `UfBootQuery` | 보호 설정과 현재 상태 조회 |
+| `SendMessageToUser(DTCMSG_TYPE_MBR)` | `UfSendEvent`의 부트 Action | PID·프로세스 생성 시각·이미지·대상 알림 |
+
+핵심 소스는 `UF_FileFilterFactory/src/boot_guard.c`와 `boot_guard_logic.h`이다.
+통신 명령·공개 C ABI와 24/40바이트 레이아웃은 `통신규약.md` 12절에 먼저 정의했다.
+기존 폴더 정책과 파일 이벤트 구조체 크기 및 버전 2는 유지한다.
+
+## 4. 유지한 동작과 보호 범위
+
+- 보호는 명시적으로 시작하며, 기본은 정지이다. 파일 포트 연결만으로 켜지지 않는다.
+- 콜백에 전달된 원시 디스크·볼륨 쓰기 중 시작 위치가 0 이상 2048바이트 미만인 경우
+  해당 선두 범위에 실제 내용 변경이 있는지 비교한다. 동일 내용은 허용한다.
+- 변경이 확인되면 커널에서 `STATUS_ACCESS_DENIED`, 전송 길이 0으로 완료한다.
+- 원본과 같이 비교 불가 시 통과한다. 대신 누적 실패와 `부트 검사 실패(통과)`를 남긴다.
+- 보호 상태는 UI 연결 해제·종료와 폴더 정책 교체·초기화에 의해 바뀌지 않는다.
+- 볼륨 상대 선두와 디스크 상대 선두는 다르다. 원본에 없던 전체 GPT 엔트리·디스크 끝
+  백업 GPT·EFI 파일 파싱/보호를 새로 추가한 것으로 표시하지 않는다.
+- 쓰기 변경을 차단한 것이며 데이터 내용만으로 랜섬웨어 여부를 확정하지 않는다.
+  이번 요청에는 자동 프로세스 종료·실행 파일 삭제·격리를 포함하지 않는다.
+
+## 5. 현재 WDK에 맞춘 안전 보완
+
+- 장치 확인은 `FO_VOLUME_OPEN` 및 확인된 장치 이름으로 수행한다. 빈 파일 이름만으로
+  일반 파일을 부트 대상으로 취급하지 않는다. 장치 번호 여러 자리와 대소문자를 처리한다.
+- 일반 폴더 허용 프로그램을 디스크 쓰기 허용 프로그램으로 자동 확대하지 않는다.
+  MetisD 전용 신뢰 프로그램 목록은 이 저장소에 없으므로 그대로 이식할 수 없다.
+- 현재 파일 필터의 커널 기원·페이징 I/O 제외를 유지한다. PID 0/4와 현재 통신 관리
+  클라이언트도 제외한다. 관리 클라이언트는 참조된 프로세스 객체로 비교하여 PID 재사용을 피한다.
+- 사용자 입력 버퍼는 MDL로 잠근 뒤 비페이징 스냅숏을 만든다. 허용한 내용과 실제로
+  하위 계층에 전달되는 내용이 달라지지 않도록 교체 버퍼를 쓰기 완료까지 보관한다.
+- 비교 읽기는 PASSIVE_LEVEL 작업자로 보내고 섹터 정렬된 버퍼·길이를 사용한다.
+  섹터 크기 512~65536의 2의 거듭제곱을 지원하며 비교 범위 자체는 2048바이트다.
+- 원본의 장치 재열기 방식을 유지하되 `FltCreateFileEx2`의 전용 커널 읽기 핸들과
+  볼륨 객체 일치 검증을 사용한다. 파일 객체 CLEANUP과 비교 읽기가 경합하지 않게 한다.
+  다만 요청자가 이미 `FSCTL_LOCK_VOLUME`으로 볼륨을 잠갔거나 공유를 금지하면 새 읽기
+  열기가 실패하여 통과할 수 있다. 이 경우를 보호 성공으로 표시하지 않으며 VM 시험 대상이다.
+- 동시 보류는 최대 16개, 스냅숏 쓰기는 요청당 최대 1MiB로 제한한다. 한도·자원·장치
+  오류는 원본의 실패 시 통과 정책을 따르며 검사 실패로 기록한다. 이 한도는 보호 공백이다.
+- 부트 이벤트는 사용자 모드 수신을 기다리지 않는 전송이다. UI가 없거나 수신을 놓치면
+  개별 로그가 유실될 수 있지만 차단 결정은 유지하고 누적 차단·실패 수를 조회할 수 있다.
+- 장치 자체가 응답하지 않으면 비교 요청/언로드의 완료가 지연될 수 있다. UI 명령 제한
+  시간과 커널 I/O 완료 시간은 같은 의미가 아니며 Verifier·장치 지연 시험은 별도 필요하다.
+
+## 6. 사용과 확인
+
+파일 제어 탭에서 파일 필터 연결 후 `MBR/GPT 선두 영역 보호`의 `시작`을 누르고 실제 보호
+상태를 확인한다. `정지`는 해당 기능만 끈다. 조회 실패는 정지가 아니라 미확인이다.
+시작·정지 오류는 UI와 `uf_fltwarp.log`에 `GetLastError`를 함께 기록한다.
+
+로그의 `부트 영역 차단`과 `부트 검사 실패(통과)`는 일반 감시 로그와 구분한다.
+프로세스 정책 등록 여부와 관계없이 파일 이벤트의 PID·이미지 경로·대상 장치를 표시한다.
+이미지를 얻지 못했으면 미확인으로 표시하고 경로를 추측하지 않는다.
+
+## 7. 검증
+
+| 검사 | 결과 |
+| --- | --- |
+| 전체 Debug x64 Rebuild | 성공, 경고 0·오류 0, 22.40초 |
+| 전체 Release x64 Rebuild | 성공, 경고 0·오류 0, 23.16초 |
+| `UF_FileFilterTest --boot-self-test` | 두 구성 각 44개 통과. 독립 경계 대조 4096개 요청 포함 |
+| `FileBootNativeChecks` | Debug/Release DLL 각 13개 통과. 입력·미연결·출력 초기화 및 경계 확인 |
+| `BootUiChecks` | 두 구성 각 32개 통과. C# ABI·상태·Action·GetLastError 표시 |
+| `BootUiRender` | 최종 Debug UI의 10개 화면과 합성 사건·단일 실행·지연 취소 검사 통과 |
+| 기존 `UF_FileFilterTest --self-test` | 두 구성 종료 코드 0 |
+| 기존 `UF_BootProtectionTest --all` | 두 구성 각 145개 통과. 일반 파일 합성 시험 |
+| 기존 `--vhdx-self-test` | 두 구성 각 40개 통과. 장치 I/O 없는 파서·이전 ABI 검사 |
+| 중단한 `--vhdx-protection-test` | 파일·장치 I/O 없이 종료 코드 50 |
+| 배포 검사 | 두 공용 bin에서 이전 드라이버/DLL 0개, 최신 SYS/DLL/EXE 원본·복사본 해시 일치 |
+
+전체 빌드 로그는 `artifacts/metis-port-debug-final.log`, `metis-port-release-final.log`이고,
+화면은 `artifacts/metisd-ui-final`에 보관했다. 화면은 합성 데이터이며 VM 실동작 캡처가 아니다.
+첫 빌드에서 시험 코드의 사용자 모드 상수/배열 매크로 두 컴파일 문제를 수정한 뒤 위 최종
+전체 빌드를 다시 수행했다. 이전 실패 로그는 `artifacts/metis-port-debug-rebuild.log`다.
+
+이전 생성물 31개는 배포 출력에서 `artifacts/excluded-disk-driver-20260914`로 상대 경로를
+유지하여 이동했다. 삭제하지 않았으므로 복구할 수 있다. 원본 프로젝트 소스는 그대로다.
+
+원본 사용자 검증을 이번 이관본에 대한 VM 시험 결과로 대신 기록하지 않는다.
+이번에는 커널 설치·로드·실제 디스크 쓰기·악성코드 실행을 하지 않았다.
+추가 VM 검증 항목은 잠금/공유 제한 볼륨, 시작/정지 동시 쓰기, 동일/변경 바이트,
+작업 한도 초과, 사용자 버퍼 변경, 클라이언트 종료, 드라이버 언로드·저장장치 지연,
+정상 Windows 작업, 요청 경로별 콜백 도달 여부 및 Driver Verifier다.
+
+재현 명령:
+
+```powershell
+.\x64\Debug\bin\UF_FileFilterTest.exe --boot-self-test
+dotnet run --project tests/FileBootNativeChecks/FileBootNativeChecks.csproj -c Release -- G:\GitCode\Ransomeware\x64\Debug\bin\uf_fltwarp.dll
+dotnet run --project tests/BootUiChecks/BootUiChecks.csproj -c Release
+dotnet run --project tests/BootUiRender/BootUiRender.csproj -c Debug -- G:\GitCode\Ransomeware\x64\Debug\bin\RansomUtilFactory.UI.dll G:\GitCode\Ransomeware\artifacts\metisd-ui-final
+```

@@ -9,8 +9,8 @@
     <CommonBinDir>$(MSBuildThisFileDirectory)..\..\x64\$(Configuration)\bin\</CommonBinDir>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../RansomUtilFactory.UI/BootNativeMethods.cs" Link="BootNativeMethods.cs" />
-    <Compile Include="../../RansomUtilFactory.UI/BootDriverInstaller.cs" Link="BootDriverInstaller.cs" />
+    <Compile Include="../../RansomUtilFactory.UI/NativeMethods.cs" Link="NativeMethods.cs" />
+    <Compile Include="../../RansomUtilFactory.UI/FileProtectionPresentation.cs" Link="FileProtectionPresentation.cs" />
   </ItemGroup>
   <Target Name="CopyBootUiChecksToCommonBin" AfterTargets="Build">
     <ItemGroup>

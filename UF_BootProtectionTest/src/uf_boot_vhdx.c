@@ -10,6 +10,7 @@
 #include <string.h>
 #include <wchar.h>
 #include "../include/uf_boot_vhdx.h"
+/* 이전 규약 헤더는 메모리 내 파서·ABI 회귀 시험에만 사용한다. 드라이버와 통신하지 않는다. */
 #include "../../UF_BootProtectionFactory/include/uf_boot_protocol.h"
 
 #define LAB_BYTES (256ull * 1024 * 1024)
@@ -284,21 +285,6 @@ static HANDLE FindOwnedVolume(DWORD Number, int Fat32, uint64_t* Start, uint64_t
     return found;
 }
 
-static int WaitForUi(const char* Stage, const char* Message)
-{
-    wchar_t input[128];
-    DWORD mode, read;
-    HANDLE console = GetStdHandle(STD_INPUT_HANDLE);
-    Log(Stage, 0);
-    puts(Message);
-    puts("완료되면 이 콘솔에서 Enter를 누르세요. 중단하려면 Ctrl+C를 누르세요.");
-    if (!GetConsoleMode(console, &mode) ||
-        !ReadConsoleW(console, input, _countof(input), &read, NULL) || read == 0) {
-        Log("interactive-console-required", ERROR_CANCELLED); return 0;
-    }
-    return 1;
-}
-
 static int KernelInfoValid(const UF_BOOT_DEVICE_INFO* Info, DWORD Number, uint64_t ExpectedId)
 {
     ULONG i;
@@ -331,59 +317,6 @@ static int KernelCovers(const UF_BOOT_DEVICE_INFO* Info, uint64_t Offset, ULONG 
     return 0;
 }
 
-static int QueryKernel(DWORD Number, uint64_t ExpectedId, UF_BOOT_DEVICE_INFO* Info)
-{
-    UF_BOOT_HEADER header = { UF_BOOT_VERSION, sizeof(header) };
-    UF_BOOT_DEVICE_LIST* list = (UF_BOOT_DEVICE_LIST*)calloc(1, sizeof(*list));
-    HANDLE control;
-    DWORD returned = 0, error = ERROR_NOT_FOUND;
-    ULONG i, matches = 0;
-    if (list == NULL) { Log("allocate-kernel-query", ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    control = CreateFileW(UF_BOOT_USER_PATH, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, OPEN_EXISTING, 0, NULL);
-    if (control == INVALID_HANDLE_VALUE) {
-        error = GetLastError(); free(list); Log("open-kernel-control", error); return 0;
-    }
-    if (!DeviceIoControl(control, IOCTL_UF_BOOT_QUERY, &header, sizeof(header),
-        list, sizeof(*list), &returned, NULL)) error = GetLastError();
-    else if (returned != sizeof(*list) || list->Version != UF_BOOT_VERSION ||
-        list->Size != sizeof(*list) || list->Reserved != 0 || list->Count > UF_BOOT_MAX_DEVICES)
-        error = ERROR_INVALID_DATA;
-    else {
-        for (i = 0; i < list->Count; ++i) {
-            if (list->Devices[i].DiskNumber == Number) {
-                ++matches;
-                if (KernelInfoValid(&list->Devices[i], Number, ExpectedId)) {
-                    *Info = list->Devices[i]; error = ERROR_SUCCESS;
-                } else error = ERROR_INVALID_DATA;
-            }
-        }
-        if (matches != 1) error = ERROR_NOT_FOUND;
-    }
-    CloseHandle(control);
-    free(list);
-    if (error != ERROR_SUCCESS) { Log("query-matching-kernel-disk", error); return 0; }
-    printf("[커널] Disk=%lu DeviceId=%llu Generation=%llu State=%lu BlockedWrites=%llu\n",
-        Info->DiskNumber, Info->DeviceId, Info->PolicyGeneration, Info->State, Info->BlockedWrites);
-    return 1;
-}
-
-static int VolumeStillOwned(HANDLE Disk, HANDLE Vhd, HANDLE Volume, DWORD Number,
-    uint64_t Start, uint64_t Length)
-{
-    VOLUME_DISK_EXTENTS extents;
-    DWORD returned, actualNumber;
-    if (!SameDisk(Disk, Vhd, &actualNumber) || actualNumber != Number ||
-        !DeviceIoControl(Volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0,
-            &extents, sizeof(extents), &returned, NULL) || returned < sizeof(extents) ||
-        extents.NumberOfDiskExtents != 1 || extents.Extents[0].DiskNumber != Number ||
-        extents.Extents[0].StartingOffset.QuadPart != (LONGLONG)Start ||
-        extents.Extents[0].ExtentLength.QuadPart != (LONGLONG)Length) {
-        Log("refuse-revalidated-volume", ERROR_INVALID_DATA); return 0;
-    }
-    return 1;
-}
-
 static int PhasePassed(const UF_LAB_PHASE* Phase, int Active,
     const BYTE* Before, const BYTE* Damage, const BYTE* After)
 {
@@ -403,92 +336,7 @@ static int PhasePassed(const UF_LAB_PHASE* Phase, int Active,
         Phase->AfterState.BlockedWrites == Phase->BeforeState.BlockedWrites;
 }
 
-static int ProtectionPhases(HANDLE Disk, HANDLE Vhd, HANDLE Volume, DWORD Number,
-    uint64_t DeviceId, int Fat32, uint64_t Start, uint64_t Length, uint64_t Backup,
-    const BYTE* Before, const BYTE* Damage, const wchar_t* Directory)
-{
-    UF_LAB_PHASE phases[2] = { 0 };
-    __declspec(align(4096)) BYTE after[2 * LAB_SECTOR];
-    UF_BOOT_DEVICE_INFO fresh;
-    char json[4096];
-    unsigned phase, i;
-    int verified = 0, n;
-    for (phase = 0; phase < 2; ++phase) {
-        UF_LAB_PHASE* current = &phases[phase];
-        ULONG expected = phase == 0 ? UF_BOOT_ACTIVE : UF_BOOT_STOPPED;
-        if (phase == 1 && !WaitForUi("wait-ui-stop",
-            "방어 중 쓰기 거부와 원본 보존을 확인했습니다. UI에서 같은 디스크의 [부트영역 방어 정지]를 누르세요.")) goto Report;
-        if (!QueryKernel(Number, DeviceId, &current->BeforeState) ||
-            current->BeforeState.State != expected ||
-            (phase == 1 && current->BeforeState.PolicyGeneration <= phases[0].BeforeState.PolicyGeneration)) {
-            Log("refuse-unexpected-kernel-phase", ERROR_INVALID_STATE); goto Report;
-        }
-        current->StateObserved = TRUE;
-        if (phase == 0 &&
-            (!KernelCovers(&current->BeforeState, Start, Fat32 ? UF_BOOT_KIND_FAT32 : UF_BOOT_KIND_NTFS) ||
-             !KernelCovers(&current->BeforeState, Start + Backup, Fat32 ? UF_BOOT_KIND_FAT32 : UF_BOOT_KIND_NTFS))) {
-            Log("refuse-kernel-boot-range-not-covered", ERROR_INVALID_DATA); goto Report;
-        }
-        if (!Hash(Before, 2 * LAB_SECTOR, current->BeforeHash)) goto Report;
-        for (i = 0; i < 2; ++i) {
-            LARGE_INTEGER position;
-            if (!VolumeStillOwned(Disk, Vhd, Volume, Number, Start, Length) ||
-                !QueryKernel(Number, DeviceId, &fresh) || fresh.State != expected ||
-                fresh.PolicyGeneration != current->BeforeState.PolicyGeneration) {
-                Log("refuse-state-or-identity-changed-before-write", ERROR_INVALID_STATE); goto Report;
-            }
-            position.QuadPart = i == 0 ? 0 : (LONGLONG)Backup;
-            if (!SetFilePointerEx(Volume, position, NULL, FILE_BEGIN)) {
-                Log("seek-owned-volume", GetLastError()); goto Report;
-            }
-            ++current->Attempted;
-            current->WriteOk[i] = WriteFile(Volume, Damage + i * LAB_SECTOR, LAB_SECTOR, &current->Written[i], NULL);
-            if (!current->WriteOk[i]) current->WriteError[i] = GetLastError();
-            else if (current->Written[i] != LAB_SECTOR) current->WriteError[i] = ERROR_WRITE_FAULT;
-            Log(phase == 0 ? (i == 0 ? "active-primary-write" : "active-backup-write") :
-                (i == 0 ? "stopped-primary-write" : "stopped-backup-write"), current->WriteError[i]);
-        }
-        if (phase == 1 && !FlushFileBuffers(Volume)) { Log("flush-stopped-volume", GetLastError()); goto Report; }
-        if (!ReadAt(Disk, Start, after, LAB_SECTOR) ||
-            !ReadAt(Disk, Start + Backup, after + LAB_SECTOR, LAB_SECTOR) ||
-            !Hash(after, sizeof(after), current->AfterHash) ||
-            !Save(Directory, phase == 0 ? L"boot-protected-after.bin" : L"boot-stopped-after.bin", after, sizeof(after)) ||
-            !QueryKernel(Number, DeviceId, &current->AfterState)) goto Report;
-        if (current->AfterState.State != expected ||
-            current->AfterState.PolicyGeneration != current->BeforeState.PolicyGeneration) {
-            Log("refuse-state-changed-after-write", ERROR_INVALID_STATE); goto Report;
-        }
-        current->Passed = PhasePassed(current, phase == 0, Before, Damage, after);
-        if (!current->Passed) { Log("kernel-phase-verification-failed", ERROR_INVALID_DATA); goto Report; }
-    }
-    verified = 1;
-Report:
-    n = sprintf_s(json, sizeof(json),
-        "{\"mode\":\"new-disposable-vhdx-kernel-protection\",\"filesystem\":\"%s\","
-        "\"kernelProtectionVerified\":%s,\"osDiskTargeted\":false,\"diskNumber\":%lu,\"deviceId\":%llu,"
-        "\"processId\":%lu,\"partitionOffset\":%llu,\"partitionBytes\":%llu,\"backupOffset\":%llu,"
-        "\"active\":{\"stateObserved\":%s,\"passed\":%s,\"generation\":%llu,\"attempted\":%lu,"
-        "\"primaryWriteError\":%lu,\"backupWriteError\":%lu,\"primaryWritten\":%lu,\"backupWritten\":%lu,"
-        "\"blockedBefore\":%llu,\"blockedAfter\":%llu,\"beforeSha256\":\"%s\",\"afterSha256\":\"%s\"},"
-        "\"stopped\":{\"stateObserved\":%s,\"passed\":%s,\"generation\":%llu,\"attempted\":%lu,"
-        "\"primaryWriteError\":%lu,\"backupWriteError\":%lu,\"primaryWritten\":%lu,\"backupWritten\":%lu,"
-        "\"blockedBefore\":%llu,\"blockedAfter\":%llu,\"beforeSha256\":\"%s\",\"afterSha256\":\"%s\"}}\r\n",
-        Fat32 ? "FAT32" : "NTFS", verified ? "true" : "false", Number, DeviceId,
-        GetCurrentProcessId(), Start, Length, Backup,
-        phases[0].StateObserved ? "true" : "false", phases[0].Passed ? "true" : "false",
-        phases[0].BeforeState.PolicyGeneration, phases[0].Attempted,
-        phases[0].WriteError[0], phases[0].WriteError[1], phases[0].Written[0], phases[0].Written[1],
-        phases[0].BeforeState.BlockedWrites, phases[0].AfterState.BlockedWrites, phases[0].BeforeHash, phases[0].AfterHash,
-        phases[1].StateObserved ? "true" : "false", phases[1].Passed ? "true" : "false",
-        phases[1].BeforeState.PolicyGeneration, phases[1].Attempted,
-        phases[1].WriteError[0], phases[1].WriteError[1], phases[1].Written[0], phases[1].Written[1],
-        phases[1].BeforeState.BlockedWrites, phases[1].AfterState.BlockedWrites, phases[1].BeforeHash, phases[1].AfterHash);
-    if (n < 0 || !Save(Directory, L"result.json", json, (DWORD)n)) return 1;
-    Log(verified ? "kernel-protection-and-stop-verified" : "kernel-protection-not-verified", 0);
-    return verified ? 0 : 1;
-}
-
-static int RunVhdx(int Fat32, int ProtectionTest)
+static int RunVhdx(int Fat32)
 {
     wchar_t temp[MAX_PATH], directory[MAX_PATH], vhdPath[MAX_PATH], physical[MAX_PATH], image[MAX_PATH];
     BYTE random[16];
@@ -502,15 +350,12 @@ static int RunVhdx(int Fat32, int ProtectionTest)
     BY_HANDLE_FILE_INFORMATION info;
     DWORD n, error, number = 0, returned, written[2] = {0}, writeError[2] = {0};
     BOOL writeOk[2] = {FALSE}, locked = FALSE, attached = FALSE;
-    uint64_t start = 0, length = 0, backup = 0, deviceId = 0;
-    UF_BOOT_DEVICE_INFO kernelInfo;
+    uint64_t start = 0, length = 0, backup = 0;
     unsigned i;
     int result = 1, verified = 0;
     ULONG physicalBytes = sizeof(physical);
     if (!GuestOnly()) return 1;
-    puts(ProtectionTest ?
-        "[커널 보호 비교 시험] 새 VHDX에서 UI 방어 시작 시 차단, 정지 시 실제 손상을 검증합니다." :
-        "[실제 손상 시험] 새 폐기용 VHDX의 기본·백업 부트 섹터만 변경합니다.");
+    puts("[실제 손상 시험] 새 폐기용 VHDX의 기본·백업 부트 섹터만 변경합니다.");
     n = GetTempPathW(_countof(temp), temp);
     if (n == 0 || n >= _countof(temp) || temp[1] != L':' || temp[2] != L'\\' ||
         GetDriveTypeW((wchar_t[4]){temp[0], L':', L'\\', 0}) != DRIVE_FIXED ||
@@ -551,37 +396,6 @@ static int RunVhdx(int Fat32, int ProtectionTest)
     disk = CreateFileW(physical, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
     if (disk == INVALID_HANDLE_VALUE) { Log("open-owned-disk-readonly", GetLastError()); goto Cleanup; }
     if (!SameDisk(disk, vhd, &number) || !FormatNewDisk(number, Fat32, directory) || !SameDisk(disk, vhd, &number)) goto Cleanup;
-    if (ProtectionTest) {
-        printf("시험 대상 디스크 번호: %lu (256 MiB, 새 UFBOOTLAB VHDX)\n", number);
-        Path(vhdPath);
-        if (!WaitForUi("wait-ui-register-owned-disk",
-            "UI 부트영역 제어 탭에서 위 번호의 데이터 VHDX를 선택해 필터를 등록하세요. 아직 방어를 시작하지 마세요.")) goto Cleanup;
-        CloseHandle(disk); disk = INVALID_HANDLE_VALUE;
-        error = DetachVirtualDisk(vhd, DETACH_VIRTUAL_DISK_FLAG_NONE, 0);
-        if (error != ERROR_SUCCESS) { Log("detach-for-filter-attachment", error); goto Cleanup; }
-        attached = FALSE;
-        error = AttachVirtualDisk(vhd, NULL, ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER, 0, &attach, NULL);
-        if (error != ERROR_SUCCESS) { Log("reattach-owned-vhdx", error); goto Cleanup; }
-        attached = TRUE;
-        physicalBytes = sizeof(physical);
-        error = GetVirtualDiskPhysicalPath(vhd, &physicalBytes, physical);
-        if (error != ERROR_SUCCESS) { Log("resolve-reattached-physical-path", error); goto Cleanup; }
-        disk = CreateFileW(physical, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
-        if (disk == INVALID_HANDLE_VALUE) { Log("open-reattached-disk", GetLastError()); goto Cleanup; }
-        if (!SameDisk(disk, vhd, &number)) goto Cleanup;
-        printf("재부착 후 디스크 번호: %lu\n", number);
-        if (!WaitForUi("wait-ui-refresh-attached-disk",
-            "UI에서 장치 목록을 새로 고쳐 위 디스크가 연결됨·정지 상태인지 확인하세요. 아직 방어를 시작하지 마세요.") ||
-            !QueryKernel(number, 0, &kernelInfo) || kernelInfo.State != UF_BOOT_STOPPED) {
-            Log("refuse-no-stopped-kernel-filter", ERROR_INVALID_STATE); goto Cleanup;
-        }
-        deviceId = kernelInfo.DeviceId;
-        if (!WaitForUi("wait-ui-start",
-            "UI에서 같은 디스크의 [부트영역 방어 시작]을 누르고 방어 중 상태가 된 것을 확인하세요.") ||
-            !QueryKernel(number, deviceId, &kernelInfo) || kernelInfo.State != UF_BOOT_ACTIVE) {
-            Log("refuse-no-active-kernel-filter", ERROR_INVALID_STATE); goto Cleanup;
-        }
-    }
     volume = FindOwnedVolume(number, Fat32, &start, &length);
     if (volume == INVALID_HANDLE_VALUE) { Log("find-owned-volume", ERROR_NOT_FOUND); goto Cleanup; }
     if (!DeviceIoControl(volume, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &returned, NULL)) {
@@ -608,11 +422,6 @@ static int RunVhdx(int Fat32, int ProtectionTest)
         sector[0] = sector[1] = sector[2] = sector[510] = sector[511] = 0;
     }
     Log("baseline-saved-before-actual-writes", 0);
-    if (ProtectionTest) {
-        result = ProtectionPhases(disk, vhd, volume, number, deviceId, Fat32,
-            start, length, backup, before, damage, directory);
-        goto Cleanup;
-    }
     for (i = 0; i < 2; ++i) {
         LARGE_INTEGER position;
         VOLUME_DISK_EXTENTS extents;
@@ -668,8 +477,7 @@ Cleanup:
     return result;
 }
 
-int UfBootVhdxDamage(int Fat32) { return RunVhdx(Fat32, 0); }
-int UfBootVhdxProtectionTest(int Fat32) { return RunVhdx(Fat32, 1); }
+int UfBootVhdxDamage(int Fat32) { return RunVhdx(Fat32); }
 
 int UfBootVhdxSelfTest(void)
 {
@@ -747,7 +555,7 @@ int UfBootVhdxSelfTest(void)
     phase.Written[1]--; VERIFY(!PhasePassed(&phase, 0, before, damage, damage));
     phase.Written[1]++; phase.Attempted = 1;
     VERIFY(!PhasePassed(&phase, 0, before, damage, damage));
-    printf("VHDX layout checks=%d failed=%d (no device I/O)\n", count, failed);
+    printf("VHDX layout/archived-ABI checks=%d failed=%d (no device I/O; not a minifilter protection test)\n", count, failed);
     return failed ? 1 : 0;
 #undef VERIFY
 }

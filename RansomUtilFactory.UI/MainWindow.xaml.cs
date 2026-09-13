@@ -13,7 +13,6 @@ public partial class MainWindow : Window
     private const int MaxLogCount = 2000;
     private readonly NativeMethods.EventCallbackV2 _eventCallback;
     private bool _connected;
-    private bool _receiverStarted;
     private bool _policyOperationRunning;
 
     public ObservableCollection<string> MonitorFolders { get; } = [];
@@ -27,311 +26,6 @@ public partial class MainWindow : Window
         DataContext = this;
         _eventCallback = ReceiveFileEvent;
         UiLogger.Info("메인 창 생성 완료");
-    }
-
-    private void Window_Loaded(object sender, RoutedEventArgs e)
-    {
-        InitializeBootControl();
-        try
-        {
-            UiLogger.Info("메인 창 로드 시작");
-        try
-        {
-            UiLogger.Info("통신 DLL ABI 검증 시작");
-            NativeMethods.ValidateAbi();
-            UiLogger.Info("통신 DLL ABI 검증 완료");
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("통신 DLL ABI 검증 실패", exception);
-            MessageBox.Show(exception.Message, "통신 DLL 초기화",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
-
-        uint error;
-        try
-        {
-            UiLogger.Info("UfFltInitialize 호출 시작");
-            error = NativeMethods.UfFltInitialize();
-            UiLogger.Info($"UfFltInitialize 호출 완료 error={error}");
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("통신 DLL 초기화 호출 예외", exception);
-            MessageBox.Show(exception.Message, "통신 DLL 초기화",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
-        if (error != NativeMethods.ErrorSuccess)
-        {
-            UiLogger.Error($"통신 DLL 초기화 실패 error={error}");
-            ShowNativeError("통신 DLL 초기화", error);
-            return;
-        }
-        UiLogger.Info("창 로드 시 자동 드라이버 연결 시작");
-        ConnectDriver(showFailure: false);
-        UiLogger.Info($"창 로드 시 자동 드라이버 연결 완료 connected={_connected} receiver={_receiverStarted}");
-        InitializeProcessControl();
-        UiLogger.Info("메인 창 로드 완료");
-    }
-    catch (Exception exception)
-    {
-        UiLogger.Error("메인 창 로드 처리 중 예외", exception);
-        MessageBox.Show(exception.Message, "RansomUtilFactory.UI 시작",
-            MessageBoxButton.OK, MessageBoxImage.Error);
-    }
-    }
-
-    private void Window_Closing(object? sender, CancelEventArgs e)
-    {
-        UiLogger.Info("메인 창 종료 시작");
-        ShutdownBootControl();
-        ShutdownProcessControl();
-        DisconnectDriver();
-        NativeMethods.UfFltShutdown();
-        UiLogger.Info("메인 창 종료 완료");
-    }
-
-    private void Connect_Click(object sender, RoutedEventArgs e)
-    {
-        UiLogger.Info("사용자가 파일 드라이버 연결을 요청");
-        DriverOperationResult loadResult;
-        try
-        {
-            loadResult = DriverInstaller.LoadFileDriver();
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("파일 드라이버 로드 버튼 처리 예외", exception);
-            MessageBox.Show(exception.Message, "파일 드라이버 로드",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
-        FileDriverStatusText.Text = loadResult.Message;
-        if (!loadResult.Success)
-        {
-            UiLogger.Error($"파일 드라이버 로드 실패 message={loadResult.Message}");
-            ShowDriverOperationResult("파일 드라이버 로드", loadResult);
-            return;
-        }
-        ConnectDriver(showFailure: true);
-    }
-
-    private void Disconnect_Click(object sender, RoutedEventArgs e)
-    {
-        UiLogger.Info("사용자가 파일 드라이버 연결 해제를 요청");
-        DisconnectDriver();
-    }
-
-    private void InstallFileDriver_Click(object sender, RoutedEventArgs e)
-    {
-        UiLogger.Info("사용자가 파일 드라이버 설치를 요청");
-        if (MessageBox.Show(
-                "파일 드라이버를 설치하고 로드하시겠습니까?\n시험용 VM에서만 실행하십시오.",
-                "파일 드라이버 설치", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
-            MessageBoxResult.Yes)
-        {
-            UiLogger.Info("파일 드라이버 설치 취소");
-            return;
-        }
-
-        DisconnectDriver();
-        DriverOperationResult result;
-        try
-        {
-            result = DriverInstaller.InstallFileDriver();
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("파일 드라이버 설치 버튼 처리 예외", exception);
-            MessageBox.Show(exception.Message, "파일 드라이버 설치",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
-        UiLogger.Info($"파일 드라이버 설치 결과 success={result.Success} message={result.Message}");
-        FileDriverStatusText.Text = result.Message;
-        if (!result.Success)
-        {
-            ShowDriverOperationResult("파일 드라이버 설치", result);
-            return;
-        }
-        ConnectDriver(showFailure: true);
-        ShowDriverOperationResult("파일 드라이버 설치", result);
-    }
-
-    private void UninstallFileDriver_Click(object sender, RoutedEventArgs e)
-    {
-        UiLogger.Info("사용자가 파일 드라이버 제거를 요청");
-        if (MessageBox.Show(
-                "적용된 정책을 초기화하고 파일 드라이버를 제거하시겠습니까?",
-                "파일 드라이버 제거", MessageBoxButton.YesNo, MessageBoxImage.Warning) !=
-            MessageBoxResult.Yes)
-        {
-            UiLogger.Info("파일 드라이버 제거 취소");
-            return;
-        }
-
-        if (_connected)
-        {
-            uint clearError = NativeMethods.UfFltClearPolicy();
-            if (clearError != NativeMethods.ErrorSuccess)
-            {
-                UiLogger.Warn($"파일 드라이버 제거 전 정책 초기화 실패 error={clearError}");
-            }
-        }
-        DisconnectDriver();
-        DriverOperationResult result;
-        try
-        {
-            result = DriverInstaller.UninstallFileDriver();
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("파일 드라이버 제거 버튼 처리 예외", exception);
-            MessageBox.Show(exception.Message, "파일 드라이버 제거",
-                MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
-        }
-        UiLogger.Info($"파일 드라이버 제거 결과 success={result.Success} message={result.Message}");
-        FileDriverStatusText.Text = result.Message;
-        ShowDriverOperationResult("파일 드라이버 제거", result);
-    }
-
-    private static void ShowDriverOperationResult(string title, DriverOperationResult result)
-    {
-        string lastError = result.LastError?.ToString() ?? "없음";
-        if (result.Success)
-        {
-            UiLogger.Info($"{title} 성공 message={result.Message} GetLastError={lastError}");
-        }
-        else
-        {
-            UiLogger.Error($"{title} 실패 GetLastError={lastError} message={result.Message}");
-        }
-        string message = result.RebootRequired
-            ? $"{result.Message}\n작업을 완료하려면 Windows를 다시 시작해야 합니다."
-            : result.Message;
-        if (!result.Success && result.LastError.HasValue)
-        {
-            message += $"\nGetLastError: {result.LastError.Value}";
-        }
-        MessageBox.Show(message, title, MessageBoxButton.OK,
-            result.Success ? MessageBoxImage.Information : MessageBoxImage.Error);
-    }
-
-    private void ConnectDriver(bool showFailure)
-    {
-        if (_connected)
-        {
-            UiLogger.Debug("드라이버 연결 요청 무시: 이미 연결됨");
-            return;
-        }
-        UiLogger.Info($"드라이버 통신 연결 호출 시작 showFailure={showFailure}");
-        uint error;
-        try
-        {
-            error = NativeMethods.UfFltConnect();
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("UfFltConnect 호출 예외", exception);
-            SetConnectionState(false);
-            if (showFailure)
-            {
-                MessageBox.Show(exception.Message, "드라이버 연결",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            return;
-        }
-        UiLogger.Info($"드라이버 통신 연결 호출 완료 error={error}");
-        if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
-        {
-            UiLogger.Warn($"파일 필터 통신 연결 실패 GetLastError={error} message={GetFileNativeErrorMessage(error)}");
-            SetConnectionState(false);
-            if (showFailure)
-            {
-                ShowNativeError("드라이버 연결", error);
-            }
-            return;
-        }
-        _connected = true;
-        UiLogger.Info("이벤트 수신 시작 호출 시작");
-        try
-        {
-            error = NativeMethods.UfFltStartEventReceiverV2(_eventCallback, IntPtr.Zero);
-        }
-        catch (Exception exception)
-        {
-            UiLogger.Error("UfFltStartEventReceiverV2 호출 예외", exception);
-            try
-            {
-                NativeMethods.UfFltDisconnect();
-            }
-            catch (Exception disconnectException)
-            {
-                UiLogger.Error("이벤트 수신 시작 실패 후 DLL 연결 해제 예외", disconnectException);
-            }
-            _connected = false;
-            SetConnectionState(false);
-            if (showFailure)
-            {
-                MessageBox.Show(exception.Message, "이벤트 수신 시작",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            return;
-        }
-        UiLogger.Info($"이벤트 수신 시작 호출 완료 error={error}");
-        if (error != NativeMethods.ErrorSuccess && error != NativeMethods.ErrorAlreadyExists)
-        {
-            NativeMethods.UfFltDisconnect();
-            _connected = false;
-            SetConnectionState(false);
-            if (showFailure)
-            {
-                ShowNativeError("이벤트 수신 시작", error);
-            }
-            return;
-        }
-        _receiverStarted = true;
-        SetConnectionState(true);
-        UiLogger.Info("드라이버 통신 연결 및 이벤트 수신 시작 완료");
-    }
-
-    private void DisconnectDriver()
-    {
-        bool succeeded = true;
-        try
-        {
-            if (_receiverStarted)
-            {
-                UiLogger.Info("이벤트 수신 중지 호출 시작");
-                NativeMethods.UfFltStopEventReceiver();
-                _receiverStarted = false;
-                UiLogger.Info("이벤트 수신 중지 호출 완료");
-            }
-            if (_connected)
-            {
-                UiLogger.Info("드라이버 통신 연결 해제 호출 시작");
-                NativeMethods.UfFltDisconnect();
-                _connected = false;
-                UiLogger.Info("드라이버 통신 연결 해제 호출 완료");
-            }
-        }
-        catch (Exception exception)
-        {
-            succeeded = false;
-            UiLogger.Error("드라이버 연결 해제 처리 예외", exception);
-        }
-        SetConnectionState(false);
-        UiLogger.Info($"드라이버 통신 연결 해제 처리 종료 success={succeeded}");
-    }
-
-    private void SetConnectionState(bool connected)
-    {
-        FileDriverConnectionText.Text = connected ? "파일 필터: 연결됨" : "파일 필터: 연결 안 됨";
-        FileDriverConnectionIndicator.Fill = new SolidColorBrush(
-            connected ? Color.FromRgb(22, 163, 74) : Color.FromRgb(179, 38, 30));
     }
 
     private void SetProcessConnectionState(bool connected, string? detail = null)
@@ -518,7 +212,7 @@ public partial class MainWindow : Window
     private async void ApplyPolicy_Click(object sender, RoutedEventArgs e)
     {
         UiLogger.Info("사용자가 정책 적용을 요청");
-        if (_policyOperationRunning)
+        if (_policyOperationRunning || _fileConnectionOperationRunning || _closing)
         {
             UiLogger.Warn("정책 적용 요청 무시: 이전 작업이 아직 실행 중");
             return;
@@ -559,6 +253,7 @@ public partial class MainWindow : Window
                     .ToArray()))
             .ToList();
 
+        int connectionVersion = _fileConnectionVersion;
         _policyOperationRunning = true;
         ApplyPolicyButton.IsEnabled = false;
         ClearPolicyButton.IsEnabled = false;
@@ -569,9 +264,11 @@ public partial class MainWindow : Window
         string? validationMessage;
         try
         {
-            PolicyApplyResult result = await Task.Run(() =>
+            PolicyApplyResult result = await RunFileNativeAsync(() =>
             {
                 string? message;
+                if (_closing || !_connected || connectionVersion != Volatile.Read(ref _fileConnectionVersion))
+                    return new PolicyApplyResult(1223, "연결 변경으로 정책 적용을 취소했습니다.");
                 uint nativeError = ReplacePolicyV2(
                     monitorFolders, protectedFolders, out message);
                 return new PolicyApplyResult(nativeError, message);
@@ -583,6 +280,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             UiLogger.Error("정책 적용 버튼 처리 예외", exception);
+            if (_closing || connectionVersion != _fileConnectionVersion) return;
             MessageBox.Show(exception.Message, "정책 적용",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return;
@@ -590,9 +288,9 @@ public partial class MainWindow : Window
         finally
         {
             _policyOperationRunning = false;
-            ApplyPolicyButton.IsEnabled = true;
-            ClearPolicyButton.IsEnabled = true;
+            if (!_closing) UpdateFileControlButtons();
         }
+        if (_closing || !_connected || connectionVersion != _fileConnectionVersion) return;
         if (error != NativeMethods.ErrorSuccess)
         {
             UiLogger.Error($"정책 적용 실패 error={error} validation={validationMessage}");
@@ -804,9 +502,10 @@ public partial class MainWindow : Window
         bool RequireCodeSignature,
         int MatchMode);
 
-    private void ClearPolicy_Click(object sender, RoutedEventArgs e)
+    private async void ClearPolicy_Click(object sender, RoutedEventArgs e)
     {
         UiLogger.Info("사용자가 정책 초기화를 요청");
+        if (_policyOperationRunning || _fileConnectionOperationRunning || _closing) return;
         if (!_connected)
         {
             UiLogger.Warn("정책 초기화 실패: 드라이버에 연결되지 않음");
@@ -817,21 +516,30 @@ public partial class MainWindow : Window
         uint error;
         try
         {
-            error = NativeMethods.UfFltClearPolicy();
+            _policyOperationRunning = true;
+            UpdateFileControlButtons();
+            error = await RunFileNativeAsync(NativeMethods.UfFltClearPolicy);
         }
         catch (Exception exception)
         {
             UiLogger.Error("정책 초기화 버튼 처리 예외", exception);
+            if (_closing) return;
             MessageBox.Show(exception.Message, "정책 초기화",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
+        finally
+        {
+            _policyOperationRunning = false;
+            if (!_closing) UpdateFileControlButtons();
+        }
+        if (_closing || !_connected) return;
         if (error != NativeMethods.ErrorSuccess)
         {
             ShowNativeError("정책 초기화", error);
             return;
         }
-        PolicyStatusText.Text = "드라이버 정책을 초기화했습니다.";
+        PolicyStatusText.Text = "폴더 정책을 초기화했습니다. 선두 영역 보호는 변경하지 않았습니다.";
         UiLogger.Info("정책 초기화 성공");
     }
 
@@ -839,37 +547,6 @@ public partial class MainWindow : Window
     {
         UiLogger.Info("UI 이벤트 로그 목록 초기화");
         EventLogs.Clear();
-    }
-
-    private void ReceiveFileEvent(IntPtr eventPointer, IntPtr context)
-    {
-        NativeMethods.FileEventV2 fileEvent = Marshal.PtrToStructure<NativeMethods.FileEventV2>(eventPointer);
-        FileEventLog log = new(
-            DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-            fileEvent.Action switch
-            {
-                1 => "감시",
-                3 => "검증 요청",
-                4 => "서명 폐기",
-                _ => "차단"
-            },
-            fileEvent.ProcessId,
-            fileEvent.Image ?? string.Empty,
-            fileEvent.Path ?? string.Empty);
-        Dispatcher.BeginInvoke(() =>
-        {
-            EventLogs.Insert(0, log);
-            while (EventLogs.Count > MaxLogCount)
-            {
-                EventLogs.RemoveAt(EventLogs.Count - 1);
-            }
-        });
-
-        if (fileEvent.Action == 3)
-        {
-            UiLogger.Info($"프로세스 신뢰 요청 pid={fileEvent.ProcessId} rule={fileEvent.ProcessRuleId}");
-            _ = Task.Run(() => ResolveProcessTrust(fileEvent));
-        }
     }
 
     private static void ResolveProcessTrust(NativeMethods.FileEventV2 fileEvent)
@@ -917,11 +594,7 @@ public partial class MainWindow : Window
 
     private static string GetFileNativeErrorMessage(uint error)
     {
-        char[] buffer = new char[512];
-        uint result = NativeMethods.UfFltGetErrorMessage(error, buffer, (uint)buffer.Length);
-        return result == NativeMethods.ErrorSuccess
-            ? new string(buffer).TrimEnd('\0')
-            : $"오류 메시지 조회 실패(GetLastError={result})";
+        return new Win32Exception(unchecked((int)error)).Message;
     }
 }
 

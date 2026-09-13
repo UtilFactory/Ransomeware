@@ -7,8 +7,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\driver.c"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\boot_guard.c"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\policy.c"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="src\driver.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\boot_guard_logic.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="include\uf_filefilter_protocol.h"><Filter>Header Files</Filter></ClInclude>
     <Inf Include="UF_FileFilterFactory.inf"><Filter>Driver Files</Filter></Inf>
   </ItemGroup>

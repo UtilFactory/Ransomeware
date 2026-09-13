@@ -17,6 +17,10 @@ typedef struct _UF_USER_EVENT_MESSAGE {
     UF_FILE_EVENT_V2 Event;
 } UF_USER_EVENT_MESSAGE;
 
+C_ASSERT(sizeof(UF_SET_BOOT_PROTECTION) == 24);
+C_ASSERT(sizeof(UF_BOOT_PROTECTION_STATE) == 40);
+C_ASSERT(FIELD_OFFSET(UF_BOOT_PROTECTION_STATE, InspectedWrites) == 16);
+
 static SRWLOCK gLock = SRWLOCK_INIT;
 static HANDLE gPort = INVALID_HANDLE_VALUE;
 static HANDLE gStopEvent = NULL;
@@ -931,6 +935,66 @@ UfFltQueryStateV2(UF_STATE_REPLY_V2* State)
         return ERROR_REVISION_MISMATCH;
     }
     return ERROR_SUCCESS;
+}
+
+unsigned long __stdcall
+UfFltSetBootProtection(int Enabled)
+{
+    UF_SET_BOOT_PROTECTION request;
+    unsigned long result;
+
+    if (Enabled != 0 && Enabled != 1) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    ZeroMemory(&request, sizeof(request));
+    request.Header.Version = UF_PROTOCOL_VERSION;
+    request.Header.Size = sizeof(request);
+    request.Header.Command = UfCommandSetBootProtection;
+    request.Enabled = (unsigned long)Enabled;
+    result = UfSendRequest(&request, sizeof(request), NULL, 0, NULL);
+    UfLogWriteFormat(result == ERROR_SUCCESS ? UfLogInfo : UfLogError,
+        "파일 필터 부트 보호 설정 enabled=%d GetLastError=%lu", Enabled, result);
+    return result;
+}
+
+unsigned long __stdcall
+UfFltQueryBootProtection(UF_BOOT_PROTECTION_STATE* State)
+{
+    UF_MESSAGE_HEADER request;
+    UF_BOOT_PROTECTION_STATE reply;
+    unsigned long bytesReturned = 0;
+    unsigned long result;
+
+    if (State == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    // 실패한 조회의 잔여 값이 보호 중/정지로 표시되지 않도록 먼저 지웁니다.
+    ZeroMemory(State, sizeof(*State));
+    ZeroMemory(&reply, sizeof(reply));
+    ZeroMemory(&request, sizeof(request));
+    request.Version = UF_PROTOCOL_VERSION;
+    request.Size = sizeof(request);
+    request.Command = UfCommandQueryBootProtection;
+    result = UfSendRequest(&request, sizeof(request), &reply, sizeof(reply), &bytesReturned);
+    if (result == ERROR_SUCCESS &&
+        (bytesReturned != sizeof(reply) || reply.Version != UF_PROTOCOL_VERSION ||
+         reply.Size != sizeof(reply))) {
+        result = ERROR_REVISION_MISMATCH;
+    }
+    if (result == ERROR_SUCCESS &&
+        (reply.Enabled > 1 || reply.ProtectedBytes != UF_BOOT_PROTECTED_BYTES)) {
+        result = ERROR_INVALID_DATA;
+    }
+    if (result == ERROR_SUCCESS) {
+        *State = reply;
+        UfLogWriteFormat(UfLogDebug,
+            "파일 필터 부트 보호 상태 enabled=%lu bytes=%lu inspected=%llu blocked=%llu failures=%llu",
+            reply.Enabled, reply.ProtectedBytes, reply.InspectedWrites,
+            reply.BlockedWrites, reply.InspectionFailures);
+    } else {
+        UfLogWriteFormat(UfLogWarn, "파일 필터 부트 보호 상태 조회 실패 GetLastError=%lu", result);
+    }
+    return result;
 }
 
 unsigned long __stdcall

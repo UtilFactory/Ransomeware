@@ -55,6 +55,31 @@ extern PFLT_PORT gUfClientPort;
 extern UF_POLICY gUfPolicy;
 extern UF_PROCESS_TRUST_ENTRY gUfTrustEntries[UF_MAX_PROCESS_TRUST_ENTRIES];
 
+VOID UfBootInitialize(VOID);
+VOID UfBootShutdown(VOID);
+VOID UfBootSetEnabled(_In_ BOOLEAN Enabled);
+VOID UfBootQuery(_Out_ UF_BOOT_PROTECTION_STATE* State);
+VOID UfBootSetController(_In_opt_ PEPROCESS Process);
+BOOLEAN UfBootIsRawWriteTarget(_In_ PFLT_CALLBACK_DATA Data);
+FLT_PREOP_CALLBACK_STATUS UfBootPreWrite(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects);
+FLT_POSTOP_CALLBACK_STATUS UfBootPostWrite(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_opt_ PVOID CompletionContext,
+    _In_ FLT_POST_OPERATION_FLAGS Flags);
+VOID UfSendEvent(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _In_ PCUNICODE_STRING FileName,
+    _In_ PCUNICODE_STRING ImageName,
+    _In_ UF_EVENT_ACTION Action,
+    _In_ UF_IO_OPERATION Operation,
+    _In_ ULONG DesiredAccess,
+    _In_ ULONG Disposition,
+    _In_ ULONGLONG ProcessCreateTime,
+    _In_opt_ const UF_POLICY_EVALUATION* Evaluation);
+
 VOID UfPolicyInitialize(VOID);
 NTSTATUS UfPolicyReplace(_In_ const UF_REPLACE_POLICY_V2* Request);
 NTSTATUS UfPolicySetProcessTrust(_In_ const UF_PROCESS_TRUST_UPDATE* Update);

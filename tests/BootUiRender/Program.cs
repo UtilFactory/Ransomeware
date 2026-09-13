@@ -1,12 +1,14 @@
 ﻿using System.Collections;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Windows.Markup;
+using System.Windows.Threading;
 using System.Xml.Linq;
 
 internal static class Program
@@ -33,92 +35,105 @@ internal static class Program
                 return File.Exists(path) ? AssemblyLoadContext.Default.LoadFromAssemblyPath(path) : null;
             };
             Assembly assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(assemblyPath);
-            // 실제 App.xaml의 리소스만 읽어 자동 창 생성용 StartupUri를 등록하지 않는다.
+            // 실제 리소스만 읽고 자동 창 생성·드라이버 초기화는 실행하지 않는다.
             Application application = new();
             XNamespace wpf = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
             XElement resources = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "BootUiRender.App.xaml"))
                 .Root!.Element(wpf + "Application.Resources")!;
-            string resourceXaml = "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">" +
-                string.Concat(resources.Elements().Select(element => element.ToString())) + "</ResourceDictionary>";
-            application.Resources = (ResourceDictionary)XamlReader.Parse(resourceXaml);
+            application.Resources = (ResourceDictionary)XamlReader.Parse(
+                "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">" +
+                string.Concat(resources.Elements().Select(element => element.ToString())) + "</ResourceDictionary>");
             Type windowType = assembly.GetType("RansomUtilFactory.UI.MainWindow", true)!;
             Window window = (Window)Activator.CreateInstance(windowType)!;
-
-            // 창을 띄우지 않으며, 혹시 레이아웃이 수명 주기 이벤트를 발생시켜도 드라이버 함수는 호출하지 않는다.
-            MethodInfo loaded = windowType.GetMethod("Window_Loaded", PrivateInstance)!;
-            window.RemoveHandler(FrameworkElement.LoadedEvent,
-                Delegate.CreateDelegate(typeof(RoutedEventHandler), window, loaded));
-            MethodInfo closing = windowType.GetMethod("Window_Closing", PrivateInstance)!;
+            window.RemoveHandler(FrameworkElement.LoadedEvent, Delegate.CreateDelegate(typeof(RoutedEventHandler),
+                window, windowType.GetMethod("Window_Loaded", PrivateInstance)!));
             window.Closing -= (System.ComponentModel.CancelEventHandler)Delegate.CreateDelegate(
-                typeof(System.ComponentModel.CancelEventHandler), window, closing);
+                typeof(System.ComponentModel.CancelEventHandler), window, windowType.GetMethod("Window_Closing", PrivateInstance)!);
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(window.Dispatcher));
             FrameworkElement root = (FrameworkElement)window.Content;
             root.DataContext = window;
-            if (root is Panel panel) panel.Background = window.Background ?? Brushes.White;
+            if (root is Panel panel) panel.Background = Brushes.White;
             window.Content = null;
-            // 창에서 분리한 뒤에도 실제 XAML의 ElementName 바인딩을 유지한다.
-            NameScope names = new();
-            names.RegisterName("BootTabScrollViewer", window.FindName("BootTabScrollViewer"));
-            names.RegisterName("BootSetupExpander", window.FindName("BootSetupExpander"));
-            NameScope.SetNameScope(root, names);
-            TabControl tabs = Descendants(root).OfType<TabControl>().Single();
-            tabs.SelectedIndex = 2;
-            ((TabItem)tabs.Items[2]).Header = "부트 영역 방어 · 레이아웃 시험";
-            SetText(window, "BootDriverConnectionText", "부트 필터: 통신 정상 · 부착 1개");
-            ((System.Windows.Shapes.Ellipse)window.FindName("BootDriverConnectionIndicator")).Fill = Brushes.SeaGreen;
-            ComboBox candidates = (ComboBox)window.FindName("BootCandidateList");
-            candidates.ItemsSource = new[] { new { DisplayName = "디스크 2 · 256 MiB · VHDX · 필터 등록됨" } };
-            candidates.SelectedIndex = 0;
-            ComboBox devices = (ComboBox)window.FindName("BootDeviceList");
-            devices.ItemsSource = new[] { new { DisplayName = "디스크 2 · 256 MiB · 방어 중 · ID 123456" } };
-            devices.SelectedIndex = 0;
-            ((DataGrid)window.FindName("BootRangeGrid")).ItemsSource = new[]
-            {
-                new { Kind = "MBR", Offset = "0", Length = "512", End = "512" },
-                new { Kind = "NTFS", Offset = "1,048,576", Length = "8,192", End = "1,056,768" },
-                new { Kind = "NTFS", Offset = "267,386,368", Length = "512", End = "267,386,880" }
-            };
-            ((DataGrid)window.FindName("BootEventGrid")).ItemsSource = Enumerable.Range(0, 40).Select(index => new
-            {
-                Time = "2026-09-14 17:20:30.123",
-                Action = index % 5 == 0 ? "상태 변경" : "쓰기 차단",
-                Device = "디스크 2",
-                Kind = "NTFS",
-                ProcessId = "12345",
-                Path = @"C:\Users\시험사용자\Desktop\bin\UF_BootProtectionTest.exe",
-                PathSource = "사용자 모드 (생성 시각 일치) · 커널 NTSTATUS=0xC0000225",
-                Offset = "1,048,576",
-                Length = "512",
-                Status = "0xC0000022",
-                Ioctl = "—",
-                Generation = 7,
-                Sequence = 40 - index,
-                ProcessCreated = "2026-09-14 17:19:28.888"
-            }).ToArray();
-            SetText(window, "BootEventStatusText", "레이아웃 검증용 합성 데이터 · 표시 40/2,000개 · 커널 누적 유실 0개");
-            foreach (string name in new[] { "InstallBootDriverButton", "RefreshBootButton", "AttachBootFilterButton", "DetachBootFilterButton", "StartBootProtectionButton", "StopBootProtectionButton" })
-            {
-                ((Button)window.FindName(name)).IsEnabled = true;
-            }
+            TabControl tabs = (TabControl)window.FindName("MainTabs");
+            Check(tabs.Items.Count == 2 && ((TabItem)tabs.Items[0]).Header.ToString() == "파일 제어" &&
+                ((TabItem)tabs.Items[1]).Header.ToString() == "프로세스 제어", "파일·프로세스 두 탭만 유지");
+            Check(window.FindName("BootDriverConnectionIndicator") is null &&
+                window.FindName("BootDeviceList") is null && window.FindName("InstallBootDriverButton") is null,
+                "별도 디스크 연결·선택·설치 UI 없음");
+            tabs.SelectedIndex = 0;
+            SetField(window, "_connected", true);
+            IList logs = (IList)windowType.GetProperty("EventLogs")!.GetValue(window)!;
+            SendEvent(assembly, window, 5, 4321, @"C:\Test\unregistered-writer.exe");
+            SendEvent(assembly, window, 6, 4322, @"C:\Test\inspection-failed.exe");
+            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            Check(logs.Count == 2, "미등록 프로세스 부트 사건 두 종류 모두 표시");
+            object failed = logs[0]!;
+            Check((string)failed.GetType().GetProperty("Action")!.GetValue(failed)! == "부트 검사 실패(통과)" &&
+                (string)failed.GetType().GetProperty("Image")!.GetValue(failed)! == @"C:\Test\inspection-failed.exe" &&
+                (uint)failed.GetType().GetProperty("ProcessId")!.GetValue(failed)! == 4322,
+                "검사 실패 통과·페이로드 PID·이미지 경로 보존");
 
-            foreach ((int width, int height) in new[] { (1120, 720), (900, 580) })
+            // 네이티브 진입 전 게이트를 잠가 중복 요청과 연결 변경 취소만 안전하게 검증한다.
+            SemaphoreSlim gate = (SemaphoreSlim)windowType.GetField("_fileNativeGate", PrivateInstance)!.GetValue(window)!;
+            gate.Wait();
+            MethodInfo begin = windowType.GetMethod("BeginBootProtectionOperationAsync", PrivateInstance)!;
+            Task pending = (Task)begin.Invoke(window, new object?[] { true })!;
+            Task duplicate = (Task)begin.Invoke(window, new object?[] { false })!;
+            Check(!pending.IsCompleted && duplicate.IsCompleted, "설정·조회 단일 실행과 중복 요청 거부");
+            Check(!Button(window, "StartBootProtectionButton").IsEnabled &&
+                !Button(window, "StopBootProtectionButton").IsEnabled &&
+                !Button(window, "RefreshBootProtectionButton").IsEnabled, "진행 중 보호 버튼 모두 비활성");
+            SetField(window, "_connected", false);
+            SetField(window, "_fileConnectionVersion", 1);
+            windowType.GetMethod("SetConnectionState", PrivateInstance)!.Invoke(window, new object[] { false });
+            gate.Release();
+            PumpUntil(pending);
+            Check(Text(window, "BootProtectionStatusText").Text.StartsWith("상태 미확인") &&
+                !Button(window, "StartBootProtectionButton").IsEnabled, "지연 결과가 연결 해제 후 상태를 복원하지 않음");
+            Check(!(bool)windowType.GetField("_bootOperationRunning", PrivateInstance)!.GetValue(window)!, "취소 후 실행 중 상태 해제");
+            SetField(window, "_closing", true);
+            SendEvent(assembly, window, 5, 9999, @"C:\Test\late-event.exe");
+            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+            Check(logs.Count == 2, "종료 중 지연 이벤트 무시");
+            SetField(window, "_closing", false);
+
+            for (int index = 0; index < 35; ++index)
             {
-                SetText(window, "BootInstallStatusText", "선택한 VHDX에 필터를 등록했습니다. VHDX 재부착 후 커널 장치 목록을 새로 고침하십시오. 방어 시작은 별도입니다.");
-                SetText(window, "BootProtectionStatusText", "디스크 2: 방어 중 · 보호 범위 3개 · 차단 123회 · 정책 세대 7 · NTSTATUS=0x00000000");
-                SetText(window, "BootCommandStatusText", "부트 영역 방어 시작 응답: 방어 중");
-                Render(window, root, output, width, height, "active");
-                SetText(window, "BootProtectionStatusText", "보호 상태 확인 불가 · GetLastError=1460 (0x000005B4, 제한 시간이 만료되어 작업이 반환되었습니다.)");
-                SetText(window, "BootCommandStatusText", "부트 영역 방어 시작 실패: GetLastError=1460 · 현재 상태를 다시 조회합니다. 마지막 응답만으로 정지를 판정하지 않습니다.");
-                Render(window, root, output, width, height, "timeout");
+                object sample = logs[index % 2]!;
+                logs.Add(sample);
             }
-            ((Expander)window.FindName("BootSetupExpander")).IsExpanded = true;
-            Render(window, root, output, 1120, 720, "setup-expanded");
-            Render(window, root, output, 900, 580, "setup-expanded");
-            if ((bool)windowType.GetField("_bootAbiValid", PrivateInstance)!.GetValue(window)! ||
-                (bool)windowType.GetField("_bootRefreshing", PrivateInstance)!.GetValue(window)!)
+            foreach ((int width, int height) in new[] { (1120, 820), (900, 580) })
             {
-                throw new InvalidOperationException("레이아웃 시험 중 부트 컨트롤 초기화가 실행되었습니다.");
+                foreach (string state in new[] { "active", "stopped", "timeout", "disconnected" })
+                {
+                    bool connected = state != "disconnected";
+                    SetText(window, "FileDriverConnectionText", connected ? "파일 필터: 연결됨" : "파일 필터: 연결 안 됨");
+                    ((System.Windows.Shapes.Ellipse)window.FindName("FileDriverConnectionIndicator")).Fill = connected ? Brushes.Green : Brushes.DarkRed;
+                    Text(window, "BootProtectionStatusText").Foreground = state == "active" ? Brushes.DarkGreen : state == "stopped" ? Brushes.DimGray : Brushes.DarkOrange;
+                    SetText(window, "BootProtectionStatusText", state switch
+                    {
+                        "active" => "보호 중 · 선두 2 KiB 변경 비교",
+                        "stopped" => "정지 · 선두 2 KiB 보호 꺼짐",
+                        _ => "상태 미확인 · 보호가 정지했다는 뜻이 아닙니다."
+                    });
+                    SetText(window, "BootProtectionCountersText", state is "active" or "stopped"
+                        ? "검사 12,345회 · 차단 123회 · 검사 실패(통과) 4회" : "검사·차단·검사 실패 횟수: 미확인");
+                    SetText(window, "BootProtectionCommandText", state switch
+                    {
+                        "timeout" => "보호 시작 실패: GetLastError=1460 (0x000005B4, 제한 시간이 만료되었습니다.)\n상태 조회 실패: GetLastError=1460 · 자동 재설정하지 않습니다.",
+                        "disconnected" => "파일 필터 연결 해제 · 보호 상태는 재연결 후 조회해야 합니다. 연결 해제는 보호 정지가 아닙니다.",
+                        _ => "조회 결과를 표시합니다. 연결 해제·폴더 정책 초기화는 보호를 정지하지 않습니다."
+                    });
+                    Button(window, "StartBootProtectionButton").IsEnabled = connected && state != "active";
+                    Button(window, "StopBootProtectionButton").IsEnabled = connected && state != "stopped";
+                    Button(window, "RefreshBootProtectionButton").IsEnabled = connected;
+                    Render(window, root, output, width, height, state);
+                    if (state == "active") Render(window, root, output, width, height, state + "-events", showEvents: true);
+                }
             }
-            Console.WriteLine("BootUiRender: 6 layouts rendered. No Window.Show, Loaded handler, native driver connection or installation.");
+            Check(!(bool)windowType.GetField("_fileInitialized", PrivateInstance)!.GetValue(window)!,
+                "레이아웃 시험에서 네이티브 드라이버 초기화를 수행하지 않음");
+            Console.WriteLine("BootUiRender: 10개 레이아웃과 합성 사건·중복 요청·지연 취소 검사 통과. 창 표시·드라이버 연결·설치·디스크 I/O 없음.");
             return 0;
         }
         catch (Exception exception)
@@ -128,71 +143,92 @@ internal static class Program
         }
     }
 
-    private static void SetText(Window window, string name, string value) =>
-        ((TextBlock)window.FindName(name)).Text = value;
-
-    private static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
+    private static void SendEvent(Assembly assembly, Window window, uint action, uint pid, string image)
     {
-        foreach (object child in LogicalTreeHelper.GetChildren(parent))
+        Type type = assembly.GetType("RansomUtilFactory.UI.NativeMethods+FileEventV2", true)!;
+        object data = Activator.CreateInstance(type)!;
+        foreach ((string name, object value) in new (string, object)[]
         {
-            if (child is DependencyObject value)
-            {
-                yield return value;
-                foreach (DependencyObject nested in Descendants(value)) yield return nested;
-            }
+            ("Version", 2u), ("Size", (uint)Marshal.SizeOf(type)), ("Action", action), ("ProcessId", pid),
+            ("Image", image), ("ImageLengthChars", (uint)image.Length), ("Path", @"\Device\HarddiskVolume2"),
+            ("PathLengthChars", 23u), ("Operation", 2u)
+        }) type.GetField(name, PrivateInstance)!.SetValue(data, value);
+        IntPtr memory = Marshal.AllocHGlobal(Marshal.SizeOf(type));
+        try
+        {
+            Marshal.StructureToPtr(data, memory, false);
+            window.GetType().GetMethod("ReceiveFileEvent", PrivateInstance)!.Invoke(window, new object[] { memory, IntPtr.Zero });
         }
+        finally { Marshal.FreeHGlobal(memory); }
     }
 
-    private static void Render(Window window, FrameworkElement root, string output,
-        int width, int height, string state)
+    private static void PumpUntil(Task task)
     {
-        // StartupUri를 등록하지 않았고 창의 Loaded/Closing도 해제한 상태에서 데이터 바인딩을 반영한다.
-        root.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.DataBind);
-        root.Measure(new Size(width, height));
-        root.Arrange(new Rect(0, 0, width, height));
-        root.UpdateLayout();
-        root.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.DataBind);
-        root.Measure(new Size(width, height));
-        root.Arrange(new Rect(0, 0, width, height));
-        root.UpdateLayout();
-        FrameworkElement content = (FrameworkElement)window.FindName("BootTabContent");
-        bool setupExpanded = ((Expander)window.FindName("BootSetupExpander")).IsExpanded;
+        DispatcherFrame frame = new();
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(10) };
+        timer.Tick += (_, _) => { if (task.IsCompleted || DateTime.UtcNow > deadline) frame.Continue = false; };
+        timer.Start();
+        Dispatcher.PushFrame(frame);
+        timer.Stop();
+        Check(task.IsCompletedSuccessfully, "취소 요청이 네이티브 호출 없이 완료");
+    }
+
+    private static void Render(Window window, FrameworkElement root, string output, int width, int height, string state, bool showEvents = false)
+    {
+        ScrollViewer scroll = (ScrollViewer)window.FindName("FileTabScrollViewer");
+        scroll.ScrollToTop();
+        root.InvalidateMeasure();
+        Text(window, "BootProtectionCommandText").InvalidateMeasure();
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            root.Dispatcher.Invoke(() => { }, DispatcherPriority.DataBind);
+            root.Measure(new Size(width, height));
+            root.Arrange(new Rect(0, 0, width, height));
+            root.UpdateLayout();
+        }
+        if (showEvents)
+        {
+            scroll.ScrollToBottom();
+            root.UpdateLayout();
+        }
+        FrameworkElement content = (FrameworkElement)window.FindName("FileTabContent");
         foreach ((string left, string right) in new[]
         {
-            ("InstallBootDriverButton", "RefreshBootButton"),
-            ("AttachBootFilterButton", "DetachBootFilterButton"),
-            ("StartBootProtectionButton", "StopBootProtectionButton")
+            ("StartBootProtectionButton", "StopBootProtectionButton"),
+            ("StopBootProtectionButton", "RefreshBootProtectionButton")
         })
         {
-            if (!setupExpanded && left != "StartBootProtectionButton") continue;
-            Rect first = Bounds((FrameworkElement)window.FindName(left), content);
-            Rect second = Bounds((FrameworkElement)window.FindName(right), content);
-            if (first.IntersectsWith(second) || first.Width == 0 || second.Width == 0 ||
-                first.Left < 0 || second.Right > content.ActualWidth || first.Top < 0 || second.Bottom > content.ActualHeight)
-            {
-                throw new InvalidOperationException($"버튼 겹침/잘림: {width}x{height} {left}, {right}");
-            }
+            Rect first = Bounds(Button(window, left), content);
+            Rect second = Bounds(Button(window, right), content);
+            Check(!first.IntersectsWith(second) && first.Width > 0 && second.Width > 0 &&
+                first.Left >= 0 && second.Right <= content.ActualWidth &&
+                first.Top >= 0 && second.Bottom <= content.ActualHeight, $"버튼 겹침·잘림 없음 {width}x{height} {state}");
         }
-        Rect eventBounds = Bounds((FrameworkElement)window.FindName("BootEventGrid"), content);
-        if (eventBounds.Height < 70 || eventBounds.Bottom > content.ActualHeight)
-        {
-            throw new InvalidOperationException($"로그 영역이 너무 작거나 잘림: {width}x{height}, {eventBounds}");
-        }
-        ScrollViewer scroll = (ScrollViewer)window.FindName("BootTabScrollViewer");
-        if (content.ActualHeight > scroll.ViewportHeight + 1 && scroll.ScrollableHeight < content.ActualHeight - scroll.ViewportHeight - 1)
-        {
-            throw new InvalidOperationException("작은 창에서 콘텐츠 하단까지 스크롤할 수 없습니다.");
-        }
+        Rect log = Bounds((FrameworkElement)window.FindName("FileEventGrid"), content);
+        Check(log.Height >= 70 && log.Bottom <= content.ActualHeight + 1, $"로그 높이·하단 영역 유지 {width}x{height} {state}");
+        Check(content.ActualHeight <= scroll.ViewportHeight + 1 ||
+            scroll.ScrollableHeight >= content.ActualHeight - scroll.ViewportHeight - 1, "작은 창 하단 스크롤 가능");
         RenderTargetBitmap bitmap = new(width, height, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(root);
         PngBitmapEncoder encoder = new();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        string path = Path.Combine(output, $"boot-ui-{width}x{height}-{state}.png");
+        string path = Path.Combine(output, $"file-boot-ui-{width}x{height}-{state}.png");
         using FileStream file = File.Create(path);
         encoder.Save(file);
-        Console.WriteLine($"PASS layout {width}x{height} {state} eventHeight={eventBounds.Height:F1} -> {path}");
+        Console.WriteLine($"레이아웃 저장: {path}");
     }
 
+    private static void Check(bool value, string description)
+    {
+        if (!value) throw new InvalidOperationException(description);
+        Console.WriteLine($"통과: {description}");
+    }
+    private static void SetField(Window window, string name, object value) =>
+        window.GetType().GetField(name, PrivateInstance)!.SetValue(window, value);
+    private static TextBlock Text(Window window, string name) => (TextBlock)window.FindName(name);
+    private static void SetText(Window window, string name, string value) => Text(window, name).Text = value;
+    private static Button Button(Window window, string name) => (Button)window.FindName(name);
     private static Rect Bounds(FrameworkElement element, Visual root) =>
         element.TransformToAncestor(root).TransformBounds(new Rect(element.RenderSize));
 }

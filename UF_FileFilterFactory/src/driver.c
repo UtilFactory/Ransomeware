@@ -32,7 +32,7 @@ static NTSTATUS UfPortMessage(
 static const FLT_OPERATION_REGISTRATION gCallbacks[] = {
     { IRP_MJ_CREATE, 0, UfPreOperation, NULL },
     { IRP_MJ_READ, 0, UfPreOperation, NULL },
-    { IRP_MJ_WRITE, 0, UfPreOperation, NULL },
+    { IRP_MJ_WRITE, 0, UfPreOperation, UfBootPostWrite },
     { IRP_MJ_SET_INFORMATION, 0, UfPreOperation, NULL },
     { IRP_MJ_SET_SECURITY, 0, UfPreOperation, NULL },
     { IRP_MJ_QUERY_INFORMATION, 0, UfPreOperation, NULL },
@@ -70,7 +70,7 @@ UfCopyUnicodeToFixed(
     *WrittenChars = chars;
 }
 
-static VOID
+VOID
 UfSendEvent(
     _In_ PFLT_CALLBACK_DATA Data,
     _In_ PCUNICODE_STRING FileName,
@@ -84,10 +84,7 @@ UfSendEvent(
 {
     UF_FILE_EVENT_V2* eventMessage;
     LARGE_INTEGER timeout;
-    PFLT_PORT clientPort;
-
-    clientPort = gUfClientPort;
-    if (clientPort == NULL) {
+    if (gUfClientPort == NULL) {
         return;
     }
 
@@ -119,9 +116,11 @@ UfSendEvent(
         eventMessage->PolicyGeneration = Evaluation->PolicyGeneration;
     }
 
-    timeout.QuadPart = -10000LL * 50LL;
+    /* 부팅 영역 알림은 수신 대기자가 없으면 즉시 끝나며 차단 경로를 지연하지 않는다. */
+    timeout.QuadPart = (Action == UfEventBootDenied || Action == UfEventBootInspectionFailed)
+        ? 0 : -10000LL * 50LL;
     (VOID)FltSendMessage(
-        gUfFilter, &clientPort, eventMessage, sizeof(*eventMessage),
+        gUfFilter, &gUfClientPort, eventMessage, sizeof(*eventMessage),
         NULL, NULL, &timeout);
     ExFreePoolWithTag(eventMessage, UF_POOL_TAG);
 }
@@ -218,7 +217,6 @@ UfPreOperation(
     ULONGLONG processCreateTime = 0;
     USHORT requestedAccess;
 
-    UNREFERENCED_PARAMETER(FltObjects);
     *CompletionContext = NULL;
 
     if (Data->RequestorMode == KernelMode ||
@@ -226,6 +224,11 @@ UfPreOperation(
          FlagOn(Data->Iopb->OperationFlags, SL_OPEN_PAGING_FILE)) ||
         Data->Iopb->TargetFileObject == NULL) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
+    /* 볼륨 쓰기는 일반 파일 이름 조회보다 먼저 검사한다. 일반 파일의 선두는 대상이 아니다. */
+    if (Data->Iopb->MajorFunction == IRP_MJ_WRITE && UfBootIsRawWriteTarget(Data)) {
+        return UfBootPreWrite(Data, FltObjects);
     }
 
     requestedAccess = UfGetRequestedAccess(
@@ -333,6 +336,7 @@ UfPortConnect(
             (PVOID volatile*)&gUfClientPort, ClientPort, NULL) != NULL) {
         return STATUS_DEVICE_BUSY;
     }
+    UfBootSetController(PsGetCurrentProcess());
     return STATUS_SUCCESS;
 }
 
@@ -340,11 +344,12 @@ static VOID
 UfPortDisconnect(_In_opt_ PVOID ConnectionCookie)
 {
     UNREFERENCED_PARAMETER(ConnectionCookie);
+    UfBootSetController(NULL);
     FltCloseClientPort(gUfFilter, &gUfClientPort);
 }
 
 static NTSTATUS
-UfPortMessage(
+UfPortMessageUnsafe(
     _In_opt_ PVOID PortCookie,
     _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer,
     _In_ ULONG InputBufferLength,
@@ -352,14 +357,15 @@ UfPortMessage(
     _In_ ULONG OutputBufferLength,
     _Out_ PULONG ReturnOutputBufferLength)
 {
-    const UF_MESSAGE_HEADER* header;
+    UF_MESSAGE_HEADER capturedHeader;
+    const UF_MESSAGE_HEADER* header = &capturedHeader;
     UNREFERENCED_PARAMETER(PortCookie);
     *ReturnOutputBufferLength = 0;
 
     if (InputBuffer == NULL || InputBufferLength < sizeof(UF_MESSAGE_HEADER)) {
         return STATUS_INVALID_PARAMETER;
     }
-    header = (const UF_MESSAGE_HEADER*)InputBuffer;
+    RtlCopyMemory(&capturedHeader, InputBuffer, sizeof(capturedHeader));
     if (header->Version != UF_PROTOCOL_VERSION ||
         header->Size > InputBufferLength ||
         header->Size < sizeof(*header)) {
@@ -391,8 +397,69 @@ UfPortMessage(
         }
         return UfPolicySetProcessTrust((const UF_PROCESS_TRUST_UPDATE*)InputBuffer);
 
+    case UfCommandSetBootProtection:
+    {
+        UF_SET_BOOT_PROTECTION request;
+        if (InputBufferLength != sizeof(request) || header->Size != sizeof(request) ||
+            OutputBufferLength != 0) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        /* 사용자 버퍼는 한 번 복사한 값만 검사하고 사용한다. */
+        RtlCopyMemory(&request, InputBuffer, sizeof(request));
+        if (request.Header.Version != UF_PROTOCOL_VERSION) {
+            return STATUS_REVISION_MISMATCH;
+        }
+        if (request.Header.Command != UfCommandSetBootProtection ||
+            request.Header.Size != sizeof(request) || request.Header.Reserved != 0 ||
+            request.Enabled > 1 || request.Reserved != 0) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        UfBootSetEnabled(request.Enabled != 0);
+        return STATUS_SUCCESS;
+    }
+
+    case UfCommandQueryBootProtection:
+    {
+        UF_BOOT_PROTECTION_STATE state;
+        if (InputBufferLength != sizeof(*header) || header->Size != sizeof(*header)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        if (header->Reserved != 0) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (OutputBuffer == NULL || OutputBufferLength < sizeof(state)) {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        if (OutputBufferLength != sizeof(state)) {
+            return STATUS_INFO_LENGTH_MISMATCH;
+        }
+        UfBootQuery(&state);
+        RtlCopyMemory(OutputBuffer, &state, sizeof(state));
+        *ReturnOutputBufferLength = sizeof(state);
+        return STATUS_SUCCESS;
+    }
+
     default:
         return STATUS_INVALID_DEVICE_REQUEST;
+    }
+}
+
+static NTSTATUS
+UfPortMessage(
+    _In_opt_ PVOID PortCookie,
+    _In_reads_bytes_opt_(InputBufferLength) PVOID InputBuffer,
+    _In_ ULONG InputBufferLength,
+    _Out_writes_bytes_to_opt_(OutputBufferLength, *ReturnOutputBufferLength) PVOID OutputBuffer,
+    _In_ ULONG OutputBufferLength,
+    _Out_ PULONG ReturnOutputBufferLength)
+{
+    /* 필터 포트 버퍼의 접근 예외를 커널 경계에서 처리한다. */
+    __try {
+        return UfPortMessageUnsafe(PortCookie, InputBuffer, InputBufferLength,
+            OutputBuffer, OutputBufferLength, ReturnOutputBufferLength);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *ReturnOutputBufferLength = 0;
+        return GetExceptionCode();
     }
 }
 
@@ -407,6 +474,7 @@ UfUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
     if (gUfClientPort != NULL) {
         FltCloseClientPort(gUfFilter, &gUfClientPort);
     }
+    UfBootShutdown();
     FltUnregisterFilter(gUfFilter);
     gUfFilter = NULL;
     UfPolicyClear();
@@ -423,6 +491,7 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 
     UNREFERENCED_PARAMETER(RegistryPath);
     UfPolicyInitialize();
+    UfBootInitialize();
 
     status = FltRegisterFilter(DriverObject, &gRegistration, &gUfFilter);
     if (!NT_SUCCESS(status)) {
@@ -455,6 +524,10 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
     if (!NT_SUCCESS(status)) {
         FltCloseCommunicationPort(gUfServerPort);
         gUfServerPort = NULL;
+        if (gUfClientPort != NULL) {
+            FltCloseClientPort(gUfFilter, &gUfClientPort);
+        }
+        UfBootShutdown();
         FltUnregisterFilter(gUfFilter);
         gUfFilter = NULL;
     }

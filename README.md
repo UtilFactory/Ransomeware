@@ -24,10 +24,12 @@
   핸들 생성·복제 요청을 감시하고, 등록된 이미지 규칙에 따라 프로세스 실행을 차단합니다.
 - `uf_procwarp.dll`은 프로세스 정책 교체·초기화, 상태 조회 및 이벤트 수신 C ABI를
   제공합니다. `UF_ProcessControlTest.exe`로 정책 차단과 이벤트 수신을 시험할 수 있습니다.
-- `UF_BootProtectionFactory.sys`는 별도 KMDF 디스크 상위 필터입니다. 초기 구현은
-  게스트 안에서 연결한 전용 데이터 VHDX의 MBR/GPT·FAT32/NTFS 부트 영역을 대상으로
-  하며, `uf_bootwarp.dll`과 UI의 `부트 영역 방어` 탭에서 방어 시작·정지와 로그를 제공합니다.
-  OS 디스크 보호와 자동 종료·격리는 지원 완료 범위가 아닙니다.
+- `UF_FileFilterFactory.sys`에 사용자 제공 MetisD의 선두 영역 변경 보호를 이관했습니다.
+  파일 제어 탭에서 시작·정지하고 기존 파일 로그로 차단·검사 실패와 요청 프로세스 경로를
+  확인합니다. 파일 연결만으로 활성화하지 않으며 원본처럼 선두 2048바이트를 비교합니다.
+  VHDX 전용 제한은 없지만 전체 GPT·백업 영역 보호를 의미하지는 않습니다.
+- 이전 `UF_BootProtectionFactory`와 `uf_bootwarp`는 솔루션 빌드·배포에서 제외하고
+  소스만 보관합니다. 별도 디스크 탭과 설치·필터 등록 기능은 UI에서 제거했습니다.
 
 파일 필터 공유 통신 규약은
 `UF_FileFilterFactory/include/uf_filefilter_protocol.h`에, 프로세스 필터 공유 통신
@@ -75,7 +77,7 @@ x64\Debug\bin
 x64\Release\bin
 ```
 
-공용 폴더에는 세 드라이버의 SYS·INF·CAT, 네이티브 DLL, C 시험 프로그램 EXE와
+공용 폴더에는 파일·프로세스 두 드라이버의 SYS·INF·CAT, 네이티브 DLL, C 시험 프로그램 EXE와
 WPF EXE·DLL·실행 구성 파일이 생성됩니다. PDB는 각 프로젝트의 원래 빌드 출력
 폴더에만 유지하며 공용 `bin`에는 복사하지 않습니다.
 
@@ -85,7 +87,7 @@ WPF EXE·DLL·실행 구성 파일이 생성됩니다. PDB는 각 프로젝트�
 
 - `uf_fltwarp.log`: `uf_fltwarp.dll`의 연결·정책·이벤트 처리 로그
 - `uf_procwarp.log`: `uf_procwarp.dll`의 연결·IOCTL·정책 적용 단계 로그
-- `uf_bootwarp.log`: 부트 보호 DLL의 IOCTL 오류 및 시작·정지 결과
+- 부트 보호 시작·정지·조회 오류는 기존 `uf_fltwarp.log`에 `GetLastError`와 함께 기록합니다.
 - `UF_FileFilterTest.log`: C 시험 프로그램의 시작·명령·오류 로그
 - `RansomUtilFactory.UI.log`: WPF UI의 초기화·버튼 동작·예외 로그
 - `uf_fltwarp.bootstrap.log`: 네이티브 DLL 초기화가 멈출 때 단계 확인용 보조 로그
@@ -97,7 +99,7 @@ UI 초기화 중 로깅 라이브러리 문제로 프로세스가 종료되지 �
 `UfFltInitialize` 초기화 단계가 멈출 때만 확인하는 보조 파일입니다.
 
 커널 드라이버를 `Debug | x64`로 빌드하면 시험 서명에 사용하는
-`UF_FileFilterFactory.cer`, `UF_ProcessFilterFactory.cer`, `UF_BootProtectionFactory.cer`도 `x64\Debug\bin`에
+`UF_FileFilterFactory.cer`, `UF_ProcessFilterFactory.cer`도 `x64\Debug\bin`에
 복사됩니다. 테스트 인증서는
 Release 공용 `bin`에는 포함하지 않습니다.
 
@@ -149,9 +151,10 @@ sc.exe stop UF_ProcessFilterFactory
 ```
 
 자세한 사전 조건과 결과 파일은 [`부팅 영역 보호 시험 프로그램`](docs/부팅영역보호_시험프로그램.md)을 참조합니다.
-임의의 실제 디스크·기존 파일 경로는 입력받지 않습니다. 신규 커널 차단 비교 시험은
-`--vhdx-protection-test NTFS --confirm-disposable-vhdx` 또는 FAT32로 실행합니다.
-UI에서 필터 등록·방어 시작·정지를 조작하고 시험 도구의 안내에 따라 진행합니다.
+임의의 실제 디스크·기존 파일 경로는 입력받지 않습니다. 이전 별도 디스크 드라이버에
+의존하던 `--vhdx-protection-test`는 중단했습니다. 파일 필터 이관본의 순수 로직 시험은
+`UF_FileFilterTest.exe --boot-self-test`, 상태 제어는 `--boot-state`, `--boot-start`,
+`--boot-stop`입니다. 제어 명령은 파일 필터를 설치한 시험 VM에서만 사용하십시오.
 [사용법과 제한](docs/부팅영역보호_사용법.md)을 먼저 확인하십시오.
 
 드라이버를 요구하지 않는 경로 변환 자체 시험:
@@ -198,8 +201,8 @@ UI에서 필터 등록·방어 시작·정지를 조작하고 시험 도구의 �
   정책 적용·초기화 및 프로세스 드라이버 설치·로드·연결·제거
 - `프로세스 제어`: 현재 UI에서 적용에 성공한 정책 이름의 실행 결과만 표시
   (`통과` 또는 `차단`). 미등록 실행·종료·다른 프로세스 접근 이벤트는 UI 목록에서 제외
-- `부트 영역 방어`: 패키지 설치, 시험 VHDX별 필터 등록·해제, 방어 시작·정지,
-  커널 보호 범위·차단 횟수·요청 PID·프로세스 경로·오류 로그 표시
+- `파일 제어`: MBR/GPT 선두 영역 보호 시작·정지·조회, 검사·차단·검사 실패 수 표시.
+  부트 영역 차단과 검사 실패(통과)를 기존 파일 이벤트 로그에 구분해 표시
 
 폴더나 실행 파일을 목록에 추가하는 것만으로는 드라이버 정책이 바뀌지 않습니다.
 각 탭에서 `정책 적용`을 누르고 완료 문구를 확인해야 합니다. 상단 초록색 상태는
@@ -247,10 +250,10 @@ Debug 실행 파일:
 
 ## 개발 문서
 
-- 신규 부팅 영역 보호의 스토리지 필터·종료·격리 구조와 구현 단계는
-  [`부팅 영역 보호 설계안`](docs/부팅영역보호_설계안.md)에 정리했습니다.
-  현재 데이터 VHDX용 초기 구현의 설치·시작·정지·검증 범위는
-  [`부팅 영역 보호 사용법`](docs/부팅영역보호_사용법.md)을 확인하십시오.
+- 현재 파일 미니필터 이관 구조와 원본 대비 차이는
+  [`MetisD 부트 보호 이관`](docs/MetisD_부트보호_이관.md)에 정리했습니다.
+  [`부팅 영역 보호 사용법`](docs/부팅영역보호_사용법.md)은 현행 사용법과 이전 구현 기록을
+  구분합니다. [`이전 설계안`](docs/부팅영역보호_설계안.md)의 별도 디스크 구조는 현행이 아닙니다.
 - 실제 실행 화면, 버튼별 기능 및 로그 해설은
   [`파일·프로세스 제어 사용 설명`](docs/포트폴리오/사용설명.md)과
   [15장 포트폴리오 PPT](docs/포트폴리오/RansomUtilFactory_파일·프로세스제어_포트폴리오_완성본.pptx)에 정리했습니다.

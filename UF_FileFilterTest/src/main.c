@@ -9,6 +9,8 @@
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
 #endif
 
+int UfRunBootGuardSelfTests(void);
+
 static void
 PrintError(const wchar_t* Operation, unsigned long Error)
 {
@@ -46,6 +48,8 @@ OnFileEvent(const UF_FILE_EVENT* Event, void* Context)
     UNREFERENCED_PARAMETER(Context);
     wprintf(
         L"[%ls] PID=%lu 접근=0x%08lX 경로=%.*ls 프로세스=%.*ls\n",
+        Event->Action == UfEventBootDenied ? L"부트 영역 차단" :
+        Event->Action == UfEventBootInspectionFailed ? L"부트 검사 실패(통과)" :
         Event->Action == UfEventDenied ? L"차단" : L"감시",
         Event->ProcessId,
         Event->DesiredAccess,
@@ -70,8 +74,12 @@ PrintUsage(void)
     wprintf(
         L"UF_FileFilterTest 사용법\n"
         L"  --self-test\n"
+        L"  --boot-self-test\n"
         L"  --convert <DOS 경로>\n"
         L"  --state\n"
+        L"  --boot-state\n"
+        L"  --boot-start\n"
+        L"  --boot-stop\n"
         L"  --clear\n"
         L"  --signer <실행 파일>\n"
         L"  --monitor <폴더> [예외 실행 파일]\n"
@@ -93,7 +101,9 @@ int wmain(int argc, wchar_t** argv)
         return 2;
     }
 
-    if (_wcsicmp(argv[1], L"--self-test") == 0) {
+    if (_wcsicmp(argv[1], L"--boot-self-test") == 0 && argc == 2) {
+        exitCode = UfRunBootGuardSelfTests();
+    } else if (_wcsicmp(argv[1], L"--self-test") == 0) {
         wchar_t path[UF_MAX_PATH_CHARS];
         error = UfFltDosPathToNtPath(L".", path, _countof(path));
         if (error != ERROR_SUCCESS) {
@@ -126,6 +136,32 @@ int wmain(int argc, wchar_t** argv)
                     state.Version, state.PathRuleCount,
                     state.MonitorExceptionCount, state.AllowedImageCount,
                     state.Connected);
+            }
+        }
+    } else if ((_wcsicmp(argv[1], L"--boot-state") == 0 ||
+                _wcsicmp(argv[1], L"--boot-start") == 0 ||
+                _wcsicmp(argv[1], L"--boot-stop") == 0) && argc == 2) {
+        UF_BOOT_PROTECTION_STATE state;
+        if (!ConnectOrReport()) {
+            exitCode = 1;
+        } else {
+            error = ERROR_SUCCESS;
+            if (_wcsicmp(argv[1], L"--boot-state") != 0) {
+                error = UfFltSetBootProtection(_wcsicmp(argv[1], L"--boot-start") == 0);
+            }
+            if (error != ERROR_SUCCESS) {
+                PrintError(L"부트 보호 설정(현재 상태 미확인)", error);
+                exitCode = 1;
+            } else {
+                error = UfFltQueryBootProtection(&state);
+                if (error != ERROR_SUCCESS) {
+                    PrintError(L"부트 보호 상태 조회(현재 상태 미확인)", error);
+                    exitCode = 1;
+                } else {
+                    wprintf(L"파일 필터 선두 영역 보호=%ls 검사범위=%lu바이트 검사=%llu 차단=%llu 검사실패=%llu\n",
+                        state.Enabled ? L"시작" : L"정지", state.ProtectedBytes,
+                        state.InspectedWrites, state.BlockedWrites, state.InspectionFailures);
+                }
             }
         }
     } else if (_wcsicmp(argv[1], L"--clear") == 0) {
