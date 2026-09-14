@@ -6,13 +6,17 @@
 #include <stdio.h>
 #include <string.h>
 
-/* 실제 전송 함수만 교체한다. 드라이버 연결이나 원시 디스크 접근은 하지 않는다. */
+/* 실제 송수신 함수만 교체한다. 드라이버 연결이나 원시 디스크 접근은 하지 않는다. */
 static HRESULT WINAPI TestFilterSendMessage(
     HANDLE Port, LPVOID Input, DWORD InputBytes,
     LPVOID Output, DWORD OutputBytes, LPDWORD ReturnedBytes);
+static HRESULT WINAPI TestFilterGetMessage(
+    HANDLE Port, PFILTER_MESSAGE_HEADER Message, DWORD MessageBytes, LPOVERLAPPED Overlapped);
 #define FilterSendMessage TestFilterSendMessage
+#define FilterGetMessage TestFilterGetMessage
 #include "../../uf_fltwarp/src/uf_fltwarp.c"
 #undef FilterSendMessage
+#undef FilterGetMessage
 
 static SRWLOCK gTestLogLock = SRWLOCK_INIT;
 static char gTestLog[131072];
@@ -28,6 +32,39 @@ static DWORD gTestWorkerThread;
 static BOOL gTestValidDuplicate;
 static UF_SET_BOOT_PROTECTION gTestRequest;
 static UF_BOOT_PROTECTION_STATE gTestReply;
+static unsigned int gTestReceiveCalls;
+static unsigned int gTestLegacyCallbacks;
+static unsigned int gTestV2Callbacks;
+static UF_FILE_EVENT_V2 gTestReceiveEvent;
+static UF_FILE_EVENT gTestLegacyEvent;
+static UF_FILE_EVENT_V2 gTestV2Event;
+
+static HRESULT WINAPI TestFilterGetMessage(
+    HANDLE Port, PFILTER_MESSAGE_HEADER Message, DWORD MessageBytes, LPOVERLAPPED Overlapped)
+{
+    UF_USER_EVENT_MESSAGE* output = (UF_USER_EVENT_MESSAGE*)Message;
+    UNREFERENCED_PARAMETER(Port);
+    UNREFERENCED_PARAMETER(Overlapped);
+    if (Message == NULL || MessageBytes != sizeof(UF_USER_EVENT_MESSAGE)) return E_INVALIDARG;
+    // 첫 번째 호출만 합성 이벤트를 반환하고 다음 호출에서 수신 루프를 끝냅니다.
+    if (gTestReceiveCalls++ != 0) return HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED);
+    output->Event = gTestReceiveEvent;
+    return S_OK;
+}
+
+static void __stdcall TestLegacyEvent(const UF_FILE_EVENT* Event, void* Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ++gTestLegacyCallbacks;
+    gTestLegacyEvent = *Event;
+}
+
+static void __stdcall TestV2Event(const UF_FILE_EVENT_V2* Event, void* Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ++gTestV2Callbacks;
+    gTestV2Event = *Event;
+}
 
 static void TestAppendLog(const char* Message)
 {
@@ -143,6 +180,47 @@ static void TestBadReply(unsigned int Case)
     TestCheck(gTestSends == 1, "invalid reply not retried");
 }
 
+static void TestBootEventCallbacks(void)
+{
+    const unsigned long actions[] = {
+        UfEventBootDenied, UfEventBootInspectionFailed, UfEventBootInspectionDenied
+    };
+    unsigned int index;
+    for (index = 0; index < _countof(actions); ++index) {
+        gTestReceiveCalls = gTestLegacyCallbacks = gTestV2Callbacks = 0;
+        ZeroMemory(&gTestReceiveEvent, sizeof(gTestReceiveEvent));
+        ZeroMemory(&gTestLegacyEvent, sizeof(gTestLegacyEvent));
+        ZeroMemory(&gTestV2Event, sizeof(gTestV2Event));
+        gTestReceiveEvent.Version = UF_PROTOCOL_VERSION;
+        gTestReceiveEvent.Size = sizeof(gTestReceiveEvent);
+        gTestReceiveEvent.Action = actions[index];
+        gTestReceiveEvent.ProcessId = 2468;
+        gTestReceiveEvent.ProcessCreateTime = 123456789;
+        wcscpy_s(gTestReceiveEvent.Path, _countof(gTestReceiveEvent.Path), L"\\Device\\HarddiskVolume3");
+        wcscpy_s(gTestReceiveEvent.Image, _countof(gTestReceiveEvent.Image), L"C:\\Test\\writer.exe");
+        gTestReceiveEvent.PathLengthChars = (unsigned long)wcslen(gTestReceiveEvent.Path);
+        gTestReceiveEvent.ImageLengthChars = (unsigned long)wcslen(gTestReceiveEvent.Image);
+        gCallback = TestLegacyEvent;
+        gCallbackV2 = TestV2Event;
+        gCallbackContext = NULL;
+        TestCheck(UfReceiverMain(NULL) == ERROR_SUCCESS, "mock event receiver completes");
+        TestCheck(gTestReceiveCalls == 2 && gTestLegacyCallbacks == 1 && gTestV2Callbacks == 1,
+            "boot action reaches both callbacks exactly once");
+        TestCheck(gTestLegacyEvent.Action == actions[index] && gTestV2Event.Action == actions[index],
+            "boot action 5/6/7 is not dropped or rewritten");
+        TestCheck(gTestLegacyEvent.ProcessId == gTestReceiveEvent.ProcessId &&
+            gTestV2Event.ProcessCreateTime == gTestReceiveEvent.ProcessCreateTime,
+            "boot event process identity preserved");
+        TestCheck(wcscmp(gTestLegacyEvent.Path, gTestReceiveEvent.Path) == 0 &&
+            wcscmp(gTestLegacyEvent.Image, gTestReceiveEvent.Image) == 0,
+            "legacy callback preserves boot event device and image paths");
+        TestCheck(memcmp(&gTestV2Event, &gTestReceiveEvent, sizeof(gTestV2Event)) == 0,
+            "V2 callback preserves complete boot event");
+    }
+    gCallback = NULL;
+    gCallbackV2 = NULL;
+}
+
 int main(void)
 {
     UF_BOOT_PROTECTION_STATE state;
@@ -216,6 +294,8 @@ int main(void)
         "non-Win32 HRESULT is not truncated");
 
     for (index = 0; index < 5; ++index) TestBadReply(index);
+
+    TestBootEventCallbacks();
 
     CloseHandle(gPort);
     gPort = INVALID_HANDLE_VALUE;

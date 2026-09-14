@@ -9,6 +9,9 @@
 #define _countof(Array) (sizeof(Array) / sizeof((Array)[0]))
 #endif
 
+// 실제 이벤트 출력과 같은 함수로 과거 통과 이벤트와 새 차단 이벤트를 구분해 검사합니다.
+const wchar_t* UfFileEventActionText(unsigned long Action);
+
 static int gChecks;
 static int gFailures;
 
@@ -45,6 +48,17 @@ int UfRunBootGuardSelfTests(void)
     UfCheck(sizeof(UF_FILE_EVENT_V2) == 1632, "existing event ABI unchanged");
     UfCheck(UfCommandSetBootProtection == 5 && UfCommandQueryBootProtection == 6, "command values");
     UfCheck(UfEventBootDenied == 5 && UfEventBootInspectionFailed == 6, "action values");
+    UfCheck(UfEventBootInspectionDenied == 7, "inspection denied action 7");
+    UfCheck(wcscmp(UfFileEventActionText(UfEventBootDenied), L"부트 영역 차단") == 0,
+        "changed boot bytes displayed as blocked");
+    UfCheck(wcscmp(UfFileEventActionText(UfEventBootInspectionFailed), L"부트 검사 실패(통과)") == 0,
+        "legacy inspection failure remains passed");
+    UfCheck(wcscmp(UfFileEventActionText(UfEventBootInspectionDenied), L"부트 검사 실패(차단)") == 0,
+        "new inspection failure displayed as blocked");
+    UfCheck(wcscmp(UfFileEventActionText(UfEventDenied), L"차단") == 0,
+        "ordinary denial label unchanged");
+    UfCheck(wcscmp(UfFileEventActionText(UfEventObserved), L"감시") == 0,
+        "ordinary observation label unchanged");
     UfCheck(UfBootProtectedWriteLength(0, 512) == 512, "first sector");
     UfCheck(UfBootProtectedWriteLength(0, 4096) == 2048, "clip prefix");
     UfCheck(UfBootProtectedWriteLength(2047, 1024) == 1, "last protected byte");

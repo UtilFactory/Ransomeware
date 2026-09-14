@@ -42,15 +42,25 @@ HexEncode(
     Text[ByteCount * 2] = L'\0';
 }
 
+const wchar_t*
+UfFileEventActionText(unsigned long Action)
+{
+    switch (Action) {
+    case UfEventBootDenied: return L"부트 영역 차단";
+    case UfEventBootInspectionFailed: return L"부트 검사 실패(통과)";
+    case UfEventBootInspectionDenied: return L"부트 검사 실패(차단)";
+    case UfEventDenied: return L"차단";
+    default: return L"감시";
+    }
+}
+
 static void __stdcall
 OnFileEvent(const UF_FILE_EVENT* Event, void* Context)
 {
     UNREFERENCED_PARAMETER(Context);
     wprintf(
         L"[%ls] PID=%lu 접근=0x%08lX 경로=%.*ls 프로세스=%.*ls\n",
-        Event->Action == UfEventBootDenied ? L"부트 영역 차단" :
-        Event->Action == UfEventBootInspectionFailed ? L"부트 검사 실패(통과)" :
-        Event->Action == UfEventDenied ? L"차단" : L"감시",
+        UfFileEventActionText(Event->Action),
         Event->ProcessId,
         Event->DesiredAccess,
         (int)Event->PathLengthChars, Event->Path,

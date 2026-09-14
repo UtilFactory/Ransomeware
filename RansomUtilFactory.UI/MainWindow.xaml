@@ -148,10 +148,12 @@
                                 </StackPanel>
                             </Grid>
                             <TextBlock x:Name="BootProtectionCountersText" Text="검사·차단·검사 실패 횟수: 미확인"
+                                       ToolTip="차단에는 검사 실패 후 차단이 포함됩니다. 검사 실패 수만으로 통과 여부를 판단하지 말고 이벤트 구분을 확인하십시오."
                                        TextWrapping="Wrap" Margin="0,3,0,0" />
                             <TextBlock x:Name="BootProtectionCommandText" Text="연결만으로 시작하지 않습니다. 연결 해제·폴더 정책 초기화는 보호를 정지하지 않습니다."
                                        TextWrapping="Wrap" Margin="0,3,0,0" />
-                            <TextBlock Text="보호 범위: 선두 2 KiB 변경 비교. 전체 GPT 엔트리·백업 GPT 보호는 포함하지 않습니다."
+                            <TextBlock x:Name="BootProtectionScopeText" Text="설정 활성 ≠ 전체 디스크 보호 검증. 미니필터 선두 2 KiB 비교 · GPT 엔트리/백업 제외."
+                                       ToolTip="보호 범위는 미니필터에 전달된 원시 쓰기의 선두 2 KiB입니다. 전체 GPT 엔트리·백업 GPT는 제외되며, 설정 활성은 모든 물리 디스크 I/O의 차단 확인이 아닙니다."
                                        Foreground="#FF8A3B12" TextWrapping="Wrap" Margin="0,3,0,0" />
                         </StackPanel>
                     </GroupBox>

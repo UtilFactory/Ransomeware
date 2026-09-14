@@ -56,7 +56,9 @@ typedef enum _UF_EVENT_ACTION {
     UfEventTrustRequired = 3,
     UfEventTrustRevoked = 4,
     UfEventBootDenied = 5,
-    UfEventBootInspectionFailed = 6
+    UfEventBootInspectionFailed = 6,
+    /* 기존 6(검사 실패 후 통과)과 구분하며 구조체 배치는 유지한다. */
+    UfEventBootInspectionDenied = 7
 } UF_EVENT_ACTION;
 
 typedef enum _UF_IO_OPERATION {

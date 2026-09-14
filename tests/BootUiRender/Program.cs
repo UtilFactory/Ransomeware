@@ -65,13 +65,27 @@ internal static class Program
             IList logs = (IList)windowType.GetProperty("EventLogs")!.GetValue(window)!;
             SendEvent(assembly, window, 5, 4321, @"C:\Test\unregistered-writer.exe");
             SendEvent(assembly, window, 6, 4322, @"C:\Test\inspection-failed.exe");
+            SendEvent(assembly, window, 7, 4323, @"C:\Test\inspection-denied.exe");
             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-            Check(logs.Count == 2, "미등록 프로세스 부트 사건 두 종류 모두 표시");
-            object failed = logs[0]!;
+            Check(logs.Count == 3, "미등록 프로세스 부트 사건 세 종류 모두 표시");
+            object denied = logs[0]!;
+            Check((string)denied.GetType().GetProperty("Action")!.GetValue(denied)! == "부트 검사 실패(차단)" &&
+                (string)denied.GetType().GetProperty("Image")!.GetValue(denied)! == @"C:\Test\inspection-denied.exe" &&
+                (uint)denied.GetType().GetProperty("ProcessId")!.GetValue(denied)! == 4323,
+                "검사 실패 후 차단을 통과로 바꾸지 않고 페이로드 PID·이미지 경로 보존");
+            object failed = logs[1]!;
             Check((string)failed.GetType().GetProperty("Action")!.GetValue(failed)! == "부트 검사 실패(통과)" &&
                 (string)failed.GetType().GetProperty("Image")!.GetValue(failed)! == @"C:\Test\inspection-failed.exe" &&
                 (uint)failed.GetType().GetProperty("ProcessId")!.GetValue(failed)! == 4322,
                 "검사 실패 통과·페이로드 PID·이미지 경로 보존");
+            Check(Text(window, "BootProtectionScopeText").Text.Contains("설정 활성 ≠ 전체 디스크 보호 검증") &&
+                Text(window, "BootProtectionScopeText").ToolTip.ToString()!.Contains("설정 활성은 모든 물리 디스크 I/O의 차단 확인이 아닙니다."),
+                "활성 설정과 물리 디스크 전체 경로 차단 검증을 구분");
+            Check(Text(window, "BootProtectionScopeText").Text.Contains("GPT 엔트리/백업 제외") &&
+                Text(window, "BootProtectionScopeText").ToolTip.ToString()!.Contains("전체 GPT 엔트리·백업 GPT는 제외"),
+                "짧은 범위 경고와 상세 툴팁에 GPT 보호 제외 유지");
+            Check(Text(window, "BootProtectionCountersText").ToolTip.ToString()!.Contains("검사 실패 후 차단이 포함"),
+                "차단과 검사 실패 누적의 중복 집계 의미 설명");
 
             // 네이티브 진입 전 게이트를 잠가 중복 요청과 연결 변경 취소만 안전하게 검증한다.
             SemaphoreSlim gate = (SemaphoreSlim)windowType.GetField("_fileNativeGate", PrivateInstance)!.GetValue(window)!;
@@ -94,12 +108,12 @@ internal static class Program
             SetField(window, "_closing", true);
             SendEvent(assembly, window, 5, 9999, @"C:\Test\late-event.exe");
             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-            Check(logs.Count == 2, "종료 중 지연 이벤트 무시");
+            Check(logs.Count == 3, "종료 중 지연 이벤트 무시");
             SetField(window, "_closing", false);
 
             for (int index = 0; index < 35; ++index)
             {
-                object sample = logs[index % 2]!;
+                object sample = logs[index % 3]!;
                 logs.Add(sample);
             }
             foreach ((int width, int height) in new[] { (1120, 820), (900, 580) })
@@ -112,12 +126,12 @@ internal static class Program
                     Text(window, "BootProtectionStatusText").Foreground = state == "active" ? Brushes.DarkGreen : state == "stopped" ? Brushes.DimGray : Brushes.DarkOrange;
                     SetText(window, "BootProtectionStatusText", state switch
                     {
-                        "active" => "보호 중 · 선두 2 KiB 변경 비교",
+                        "active" => "설정 활성 · 미니필터 선두 2 KiB 변경 비교",
                         "stopped" => "정지 · 선두 2 KiB 보호 꺼짐",
                         _ => "상태 미확인 · 보호가 정지했다는 뜻이 아닙니다."
                     });
                     SetText(window, "BootProtectionCountersText", state is "active" or "stopped"
-                        ? "검사 12,345회 · 차단 123회 · 검사 실패(통과) 4회" : "검사·차단·검사 실패 횟수: 미확인");
+                        ? "검사 12,345회 · 차단 123회 · 검사 실패 4회" : "검사·차단·검사 실패 횟수: 미확인");
                     SetText(window, "BootProtectionCommandText", state switch
                     {
                         "timeout" => "보호 시작 실패: GetLastError=1460 (0x000005B4, 제한 시간이 만료되었습니다.)\n상태 조회 실패: GetLastError=1460 · 자동 재설정하지 않습니다.",

@@ -30,8 +30,8 @@ public partial class MainWindow
                 fileEvent.Path ?? string.Empty);
 
             // 부트 사건은 폴더/프로세스 등록 정책과 무관하게 원래 페이로드의 PID와 이미지를 표시한다.
-            if (fileEvent.Action == NativeMethods.UfEventBootDenied || fileEvent.Action == NativeMethods.UfEventBootInspectionFailed)
-                UiLogger.Warn($"{log.Action} pid={log.ProcessId} image={log.Image} path={log.Path}");
+            if (FileProtectionPresentation.IsBootEvent(fileEvent.Action))
+                UiLogger.Warn($"{log.Action} action={fileEvent.Action} pid={log.ProcessId} image={log.Image} path={log.Path}");
             if (Interlocked.Increment(ref _pendingFileEventCount) <= MaxPendingFileEvents)
             {
                 _pendingFileEvents.Enqueue((Volatile.Read(ref _fileConnectionVersion), log));

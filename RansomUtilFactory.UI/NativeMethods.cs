@@ -14,6 +14,7 @@ internal static class NativeMethods
     internal const uint UfEventDenied = 2;
     internal const uint UfEventBootDenied = 5;
     internal const uint UfEventBootInspectionFailed = 6;
+    internal const uint UfEventBootInspectionDenied = 7;
     internal const ushort PfAccessRead = 0x0001;
     internal const ushort PfAccessWrite = 0x0002;
     internal const ushort PfAccessAll = 0x0003;

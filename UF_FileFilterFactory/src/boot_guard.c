@@ -149,7 +149,7 @@ UfBootReport(
     ULONGLONG createTime = 0;
     NTSTATUS nameStatus;
 
-    if (Action == UfEventBootInspectionFailed) {
+    if (Action == UfEventBootInspectionFailed || Action == UfEventBootInspectionDenied) {
         InterlockedIncrement64(&gUfBootFailures);
     }
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
@@ -181,6 +181,39 @@ UfBootReport(
     if (processImage != NULL) {
         ExFreePool(processImage);
     }
+}
+
+static VOID
+UfBootTraceWrite(_In_ PFLT_CALLBACK_DATA Data, _In_ PCSTR Stage, _In_ NTSTATUS Status)
+{
+    /* 바이트 내용이나 커널 주소 없이 검사 분기와 원래 실패 코드를 남긴다. */
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+        "[UF][boot] revision=20260915.1 stage=%s status=0x%08lx pid=%lu tid=%lu mode=%lu irql=%lu flags=0x%08lx offset=%I64d length=%lu\n",
+        Stage, Status, FltGetRequestorProcessId(Data), HandleToULong(PsGetCurrentThreadId()),
+        (ULONG)Data->RequestorMode, (ULONG)KeGetCurrentIrql(), Data->Iopb->IrpFlags,
+        Data->Iopb->Parameters.Write.ByteOffset.QuadPart, Data->Iopb->Parameters.Write.Length);
+}
+
+static FLT_PREOP_CALLBACK_STATUS
+UfBootDenyInspection(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_opt_ PFLT_VOLUME Volume,
+    _In_opt_ PEPROCESS Process,
+    _In_opt_ PCUNICODE_STRING DeviceName,
+    _In_ NTSTATUS FailureStatus,
+    _In_ PCSTR Stage)
+{
+    UfBootTraceWrite(Data, Stage, FailureStatus);
+    /* 이미 확인한 원시 선두 쓰기만 호출한다. 정지는 진행 중 검사에도 적용한다. */
+    if (InterlockedCompareExchange(&gUfBootEnabled, 0, 0) == 0 || UfBootIsController(Process)) {
+        UfBootTraceWrite(Data, "inspection-cancelled", STATUS_SUCCESS);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    InterlockedIncrement64(&gUfBootBlocked);
+    Data->IoStatus.Status = STATUS_ACCESS_DENIED;
+    Data->IoStatus.Information = 0;
+    UfBootReport(Data, Volume, Process, DeviceName, UfEventBootInspectionDenied, FailureStatus);
+    return FLT_PREOP_COMPLETE;
 }
 
 BOOLEAN
@@ -338,6 +371,7 @@ UfBootInspectWorker(
     NTSTATUS status = STATUS_SUCCESS;
     FLT_PREOP_CALLBACK_STATUS completion = FLT_PREOP_SUCCESS_NO_CALLBACK;
     PVOID postContext = NULL;
+    PCSTR failureStage = "worker-context";
     int differs;
 
     FltFreeDeferredIoWorkItem(WorkItem);
@@ -349,6 +383,7 @@ UfBootInspectWorker(
         status = STATUS_INVALID_DEVICE_STATE;
         goto Failed;
     }
+    failureStage = "target-validation";
     status = UfBootValidateTarget(Data, context, &readLength, &nameInfo);
     if (nameInfo != NULL) {
         deviceName = &nameInfo->Name;
@@ -358,6 +393,7 @@ UfBootInspectWorker(
     }
 
     /* FltLockUserBuffer의 MDL은 FltMgr 소유이며 여기서는 해제하지 않는다. */
+    failureStage = "source-mdl";
     sourceMdl = Data->Iopb->Parameters.Write.MdlAddress;
     if (sourceMdl == NULL || MmGetMdlByteCount(sourceMdl) < Data->Iopb->Parameters.Write.Length) {
         status = STATUS_INVALID_USER_BUFFER;
@@ -371,6 +407,7 @@ UfBootInspectWorker(
     /* 하위 파일시스템의 섹터 반올림 접근까지 할당하되 요청 길이는 변경하지 않는다.
        readLength는 검증된 섹터 크기의 배수이자 2의 거듭제곱이다. */
     writeAllocationLength = (Data->Iopb->Parameters.Write.Length + readLength - 1) & ~(readLength - 1);
+    failureStage = "snapshot-allocation";
     context->WriteCopy = FltAllocatePoolAlignedWithTag(context->Instance,
         NonPagedPoolNx, writeAllocationLength, UF_BOOT_TAG);
     if (context->WriteCopy == NULL) {
@@ -378,6 +415,7 @@ UfBootInspectWorker(
         goto Failed;
     }
     RtlZeroMemory(context->WriteCopy, writeAllocationLength);
+    failureStage = "snapshot-copy";
     __try {
         RtlCopyMemory(context->WriteCopy, source, Data->Iopb->Parameters.Write.Length);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -386,6 +424,7 @@ UfBootInspectWorker(
     if (!NT_SUCCESS(status)) {
         goto Failed;
     }
+    failureStage = "snapshot-mdl";
     context->WriteMdl = IoAllocateMdl(context->WriteCopy,
         writeAllocationLength, FALSE, FALSE, NULL);
     if (context->WriteMdl == NULL) {
@@ -394,6 +433,7 @@ UfBootInspectWorker(
     }
     MmBuildMdlForNonPagedPool(context->WriteMdl);
 
+    failureStage = "read-buffer-allocation";
     readBuffer = FltAllocatePoolAlignedWithTag(context->Instance,
         NonPagedPoolNx, readLength, UF_BOOT_TAG);
     if (readBuffer == NULL) {
@@ -401,6 +441,7 @@ UfBootInspectWorker(
         goto Failed;
     }
     /* 아래쪽 필터로만 읽고 최대 16개 작업자의 완료까지 메모리와 rundown을 유지한다. */
+    failureStage = "prefix-reopen-read";
     status = UfBootReadExistingPrefix(context, deviceName, readLength, readBuffer, &bytesRead);
     if (!NT_SUCCESS(status) || bytesRead <
         (ULONG)Data->Iopb->Parameters.Write.ByteOffset.QuadPart + context->CompareLength) {
@@ -409,6 +450,7 @@ UfBootInspectWorker(
         }
         goto Failed;
     }
+    failureStage = "prefix-compare";
     differs = UfBootPrefixDiffers(
         (const unsigned char*)readBuffer + (ULONG)Data->Iopb->Parameters.Write.ByteOffset.QuadPart,
         context->WriteCopy, context->CompareLength);
@@ -422,6 +464,7 @@ UfBootInspectWorker(
         goto Complete;
     }
     if (differs != 0) {
+        UfBootTraceWrite(Data, "changed-prefix-denied", STATUS_ACCESS_DENIED);
         InterlockedIncrement64(&gUfBootBlocked);
         Data->IoStatus.Status = STATUS_ACCESS_DENIED;
         Data->IoStatus.Information = 0;
@@ -440,11 +483,12 @@ UfBootInspectWorker(
     InterlockedIncrement(&context->References);
     postContext = context;
     completion = FLT_PREOP_SUCCESS_WITH_CALLBACK;
+    UfBootTraceWrite(Data, "identical-prefix-snapshot-allowed", STATUS_SUCCESS);
     goto Complete;
 
 Failed:
-    UfBootReport(Data, context->Volume, context->Process,
-        deviceName, UfEventBootInspectionFailed, status);
+    completion = UfBootDenyInspection(Data, context->Volume, context->Process,
+        deviceName, status, failureStage);
 Complete:
     if (readBuffer != NULL) {
         FltFreePoolAlignedWithTag(context->Instance, readBuffer, UF_BOOT_TAG);
@@ -466,10 +510,9 @@ UfBootPreWrite(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltOb
     PFLT_DEFERRED_IO_WORKITEM workItem;
     ULONG compareLength;
     NTSTATUS status;
+    FLT_PREOP_CALLBACK_STATUS failureCompletion;
 
-    if (fileObject == NULL || Data->RequestorMode == KernelMode ||
-        FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO | IRP_SYNCHRONOUS_PAGING_IO) ||
-        FltGetRequestorProcessId(Data) <= 4 || UfBootIsController(process) ||
+    if (fileObject == NULL || UfBootIsController(process) ||
         InterlockedCompareExchange(&gUfBootEnabled, 0, 0) == 0) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -480,49 +523,59 @@ UfBootPreWrite(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltOb
         fileObject->FileName.Length != 0)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
+    /* 원본의 커널 페이징 예외만 유지한다. PID나 KernelMode 전체를 신뢰하지 않는다. */
+    if (Data->RequestorMode == KernelMode &&
+        FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO | IRP_SYNCHRONOUS_PAGING_IO)) {
+        UfBootTraceWrite(Data, "kernel-paging-exempt", STATUS_SUCCESS);
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
     if (FLT_IS_FASTIO_OPERATION(Data)) {
         return FLT_PREOP_DISALLOW_FASTIO;
     }
     InterlockedIncrement64(&gUfBootInspected);
+    UfBootTraceWrite(Data, "inspect-enter", STATUS_SUCCESS);
     if (!FLT_IS_IRP_OPERATION(Data) || KeGetCurrentIrql() > APC_LEVEL ||
+        FlagOn(Data->Iopb->IrpFlags, IRP_PAGING_IO | IRP_SYNCHRONOUS_PAGING_IO) ||
         IoGetTopLevelIrp() != NULL || FltObjects->Instance == NULL || FltObjects->Volume == NULL ||
         Data->Iopb->Parameters.Write.Length > UF_BOOT_MAX_WRITE_BYTES) {
-        UfBootReport(Data, FltObjects->Volume, process, NULL,
-            UfEventBootInspectionFailed, STATUS_NOT_SUPPORTED);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            STATUS_NOT_SUPPORTED, "request-context-or-size");
     }
     if (!ExAcquireRundownProtection(&gUfBootRundown)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            STATUS_DELETE_PENDING, "rundown-unavailable");
     }
     if (InterlockedIncrement(&gUfBootPending) > UF_BOOT_MAX_PENDING) {
         InterlockedDecrement(&gUfBootPending);
-        UfBootReport(Data, FltObjects->Volume, process, NULL,
-            UfEventBootInspectionFailed, STATUS_DEVICE_BUSY);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            STATUS_DEVICE_BUSY, "pending-limit");
         ExReleaseRundownProtection(&gUfBootRundown);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     context = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*context), UF_BOOT_TAG);
     if (context == NULL) {
         InterlockedDecrement(&gUfBootPending);
-        UfBootReport(Data, FltObjects->Volume, process, NULL,
-            UfEventBootInspectionFailed, STATUS_INSUFFICIENT_RESOURCES);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            STATUS_INSUFFICIENT_RESOURCES, "context-allocation");
         ExReleaseRundownProtection(&gUfBootRundown);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     context->References = 1;
     context->CompareLength = compareLength;
     status = FltObjectReference(FltObjects->Instance);
     if (!NT_SUCCESS(status)) {
-        UfBootReport(Data, FltObjects->Volume, process, NULL, UfEventBootInspectionFailed, status);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            status, "instance-reference");
         UfBootReleaseContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     context->Instance = FltObjects->Instance;
     status = FltObjectReference(FltObjects->Volume);
     if (!NT_SUCCESS(status)) {
-        UfBootReport(Data, FltObjects->Volume, process, NULL, UfEventBootInspectionFailed, status);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            status, "volume-reference");
         UfBootReleaseContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     context->Volume = FltObjects->Volume;
     if (process != NULL) {
@@ -531,24 +584,26 @@ UfBootPreWrite(_Inout_ PFLT_CALLBACK_DATA Data, _In_ PCFLT_RELATED_OBJECTS FltOb
     }
     status = FltLockUserBuffer(Data);
     if (!NT_SUCCESS(status)) {
-        UfBootReport(Data, FltObjects->Volume, process, NULL, UfEventBootInspectionFailed, status);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            status, "lock-write-buffer");
         UfBootReleaseContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     workItem = FltAllocateDeferredIoWorkItem();
     if (workItem == NULL) {
-        UfBootReport(Data, FltObjects->Volume, process, NULL,
-            UfEventBootInspectionFailed, STATUS_INSUFFICIENT_RESOURCES);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            STATUS_INSUFFICIENT_RESOURCES, "work-item-allocation");
         UfBootReleaseContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     status = FltQueueDeferredIoWorkItem(workItem, Data,
         UfBootInspectWorker, DelayedWorkQueue, context);
     if (!NT_SUCCESS(status)) {
         FltFreeDeferredIoWorkItem(workItem);
-        UfBootReport(Data, FltObjects->Volume, process, NULL, UfEventBootInspectionFailed, status);
+        failureCompletion = UfBootDenyInspection(Data, FltObjects->Volume, process, NULL,
+            status, "queue-work-item");
         UfBootReleaseContext(context);
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return failureCompletion;
     }
     return FLT_PREOP_PENDING;
 }

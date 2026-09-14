@@ -34,8 +34,12 @@ state.InspectedWrites = ulong.MaxValue;
 state.BlockedWrites = 2500;
 state.InspectionFailures = 3;
 FileProtectionPresentation.ValidateState(state);
-Check(FileProtectionPresentation.Status(state).StartsWith("보호 중"), "조회에서 확인된 활성 표시");
-Check(FileProtectionPresentation.Counters(state).Contains("검사 실패(통과) 3회"), "검사 실패는 통과로 표시");
+Check(FileProtectionPresentation.Status(state).StartsWith("설정 활성") &&
+    FileProtectionPresentation.Status(state).Contains("미니필터"), "활성은 미니필터 설정값으로 표시");
+Check(FileProtectionPresentation.Counters(state).Contains("검사 실패 3회") &&
+    !FileProtectionPresentation.Counters(state).Contains("통과"), "실패 누적 수를 통과로 오인하지 않음");
+Check(FileProtectionPresentation.Counters(state).Contains($"차단 {state.BlockedWrites:N0}회"),
+    "차단 수에서 검사 실패 수를 빼거나 다시 더하지 않음");
 IntPtr memory = Marshal.AllocHGlobal(40);
 try
 {
@@ -54,6 +58,12 @@ Check(FileProtectionPresentation.Status(null).Contains("상태 미확인") &&
 Check(FileProtectionPresentation.Counters(null).Contains("미확인"), "조회 실패 시 카운터 0으로 위장하지 않음");
 Check(FileProtectionPresentation.Action(5) == "부트 영역 차단", "Action 5 차단");
 Check(FileProtectionPresentation.Action(6) == "부트 검사 실패(통과)", "Action 6 실패·통과");
+Check(NativeMethods.UfEventBootInspectionDenied == 7 &&
+    FileProtectionPresentation.Action(7) == "부트 검사 실패(차단)" &&
+    !FileProtectionPresentation.Action(7).Contains("통과"), "Action 7 검사 실패 후 차단을 통과와 구분");
+Check(FileProtectionPresentation.IsBootEvent(5) && FileProtectionPresentation.IsBootEvent(6) &&
+    FileProtectionPresentation.IsBootEvent(7) && !FileProtectionPresentation.IsBootEvent(2) &&
+    !FileProtectionPresentation.IsBootEvent(99), "부트 사건 세 종류만 별도 경고 로그 대상");
 Check(FileProtectionPresentation.Action(99).StartsWith("알 수 없음"), "알 수 없는 Action을 차단으로 오인하지 않음");
 Check(FileProtectionPresentation.Action(1) == "감시" && FileProtectionPresentation.Action(2) == "차단" &&
     FileProtectionPresentation.Action(3) == "검증 요청" && FileProtectionPresentation.Action(4) == "서명 폐기", "기존 Action 유지");

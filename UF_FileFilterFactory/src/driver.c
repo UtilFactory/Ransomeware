@@ -7,9 +7,9 @@ PFLT_PORT gUfClientPort;
 /* 요청·수명 주기 진단만 출력하며 파일 내용이나 커널 주소는 기록하지 않는다. */
 /* Release WDK에서 비활성화할 수 있는 날짜 매크로 대신 명시적 진단 개정을 사용한다. */
 #if DBG
-#define UF_CONTROL_BUILD "file-boot-trace-20260914.1/Debug"
+#define UF_CONTROL_BUILD "file-boot-failclosed-20260915.1/Debug"
 #else
-#define UF_CONTROL_BUILD "file-boot-trace-20260914.1/Release"
+#define UF_CONTROL_BUILD "file-boot-failclosed-20260915.1/Release"
 #endif
 #define UF_CONTROL_TRACE(...) \
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[UF][control] " __VA_ARGS__)
@@ -128,7 +128,8 @@ UfSendEvent(
     }
 
     /* 부팅 영역 알림은 수신 대기자가 없으면 즉시 끝나며 차단 경로를 지연하지 않는다. */
-    timeout.QuadPart = (Action == UfEventBootDenied || Action == UfEventBootInspectionFailed)
+    timeout.QuadPart = (Action == UfEventBootDenied || Action == UfEventBootInspectionFailed ||
+        Action == UfEventBootInspectionDenied)
         ? 0 : -10000LL * 50LL;
     (VOID)FltSendMessage(
         gUfFilter, &gUfClientPort, eventMessage, sizeof(*eventMessage),
@@ -230,16 +231,16 @@ UfPreOperation(
 
     *CompletionContext = NULL;
 
+    /* 부트 쓰기는 비페이징 커널 요청도 검사한다. 일반 파일 정책의 예외와 분리한다. */
+    if (Data->Iopb->MajorFunction == IRP_MJ_WRITE && UfBootIsRawWriteTarget(Data)) {
+        return UfBootPreWrite(Data, FltObjects);
+    }
+
     if (Data->RequestorMode == KernelMode ||
         (Data->Iopb->MajorFunction == IRP_MJ_CREATE &&
          FlagOn(Data->Iopb->OperationFlags, SL_OPEN_PAGING_FILE)) ||
         Data->Iopb->TargetFileObject == NULL) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }
-
-    /* 볼륨 쓰기는 일반 파일 이름 조회보다 먼저 검사한다. 일반 파일의 선두는 대상이 아니다. */
-    if (Data->Iopb->MajorFunction == IRP_MJ_WRITE && UfBootIsRawWriteTarget(Data)) {
-        return UfBootPreWrite(Data, FltObjects);
     }
 
     requestedAccess = UfGetRequestedAccess(
