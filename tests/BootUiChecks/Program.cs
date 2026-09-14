@@ -59,7 +59,7 @@ Check(FileProtectionPresentation.Counters(null).Contains("미확인"), "조회 �
 Check(FileProtectionPresentation.Action(5) == "부트 영역 차단", "Action 5 차단");
 Check(FileProtectionPresentation.Action(6) == "부트 검사 실패(통과)", "Action 6 실패·통과");
 Check(NativeMethods.UfEventBootInspectionDenied == 7 &&
-    FileProtectionPresentation.Action(7) == "부트 검사 실패(차단)" &&
+    FileProtectionPresentation.Action(7) == "부트 쓰기 차단 — 검사 오류" &&
     !FileProtectionPresentation.Action(7).Contains("통과"), "Action 7 검사 실패 후 차단을 통과와 구분");
 Check(FileProtectionPresentation.IsBootEvent(5) && FileProtectionPresentation.IsBootEvent(6) &&
     FileProtectionPresentation.IsBootEvent(7) && !FileProtectionPresentation.IsBootEvent(2) &&

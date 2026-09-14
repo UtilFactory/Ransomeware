@@ -53,7 +53,7 @@ int UfRunBootGuardSelfTests(void)
         "changed boot bytes displayed as blocked");
     UfCheck(wcscmp(UfFileEventActionText(UfEventBootInspectionFailed), L"부트 검사 실패(통과)") == 0,
         "legacy inspection failure remains passed");
-    UfCheck(wcscmp(UfFileEventActionText(UfEventBootInspectionDenied), L"부트 검사 실패(차단)") == 0,
+    UfCheck(wcscmp(UfFileEventActionText(UfEventBootInspectionDenied), L"부트 쓰기 차단 — 검사 오류") == 0,
         "new inspection failure displayed as blocked");
     UfCheck(wcscmp(UfFileEventActionText(UfEventDenied), L"차단") == 0,
         "ordinary denial label unchanged");

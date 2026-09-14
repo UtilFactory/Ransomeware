@@ -32,7 +32,7 @@ internal static class FileProtectionPresentation
         4 => "서명 폐기",
         NativeMethods.UfEventBootDenied => "부트 영역 차단",
         NativeMethods.UfEventBootInspectionFailed => "부트 검사 실패(통과)",
-        NativeMethods.UfEventBootInspectionDenied => "부트 검사 실패(차단)",
+        NativeMethods.UfEventBootInspectionDenied => "부트 쓰기 차단 — 검사 오류",
         _ => $"알 수 없음 ({action})"
     };
 

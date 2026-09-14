@@ -199,7 +199,13 @@
                                   EnableRowVirtualization="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="시각" Binding="{Binding Time}" Width="145" MinWidth="145" />
-                                <DataGridTextColumn Header="구분" Binding="{Binding Action}" Width="155" MinWidth="155" />
+                                <DataGridTextColumn Header="구분" Binding="{Binding Action}" Width="SizeToCells" MinWidth="155">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="ToolTip" Value="{Binding Action}" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
                                 <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="75" MinWidth="75" />
                                 <DataGridTextColumn Header="요청 프로세스 이미지 경로" Binding="{Binding Image}" Width="240" MinWidth="240" />
                                 <DataGridTextColumn Header="파일 / 장치 경로" Binding="{Binding Path}" Width="*" MinWidth="160" />

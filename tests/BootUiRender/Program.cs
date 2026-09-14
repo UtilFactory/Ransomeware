@@ -69,7 +69,7 @@ internal static class Program
             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             Check(logs.Count == 3, "미등록 프로세스 부트 사건 세 종류 모두 표시");
             object denied = logs[0]!;
-            Check((string)denied.GetType().GetProperty("Action")!.GetValue(denied)! == "부트 검사 실패(차단)" &&
+            Check((string)denied.GetType().GetProperty("Action")!.GetValue(denied)! == "부트 쓰기 차단 — 검사 오류" &&
                 (string)denied.GetType().GetProperty("Image")!.GetValue(denied)! == @"C:\Test\inspection-denied.exe" &&
                 (uint)denied.GetType().GetProperty("ProcessId")!.GetValue(denied)! == 4323,
                 "검사 실패 후 차단을 통과로 바꾸지 않고 페이로드 PID·이미지 경로 보존");
@@ -205,6 +205,16 @@ internal static class Program
         {
             scroll.ScrollToBottom();
             root.UpdateLayout();
+            DataGrid eventGrid = (DataGrid)window.FindName("FileEventGrid");
+            TextBlock actionText = (TextBlock)eventGrid.Columns[1].GetCellContent(eventGrid.Items[0]);
+            FormattedText actionLayout = new(actionText.Text, System.Globalization.CultureInfo.CurrentCulture,
+                actionText.FlowDirection, new Typeface(actionText.FontFamily, actionText.FontStyle,
+                    actionText.FontWeight, actionText.FontStretch), actionText.FontSize, actionText.Foreground,
+                VisualTreeHelper.GetDpi(actionText).PixelsPerDip);
+            Check(actionLayout.WidthIncludingTrailingWhitespace <= actionText.ActualWidth + 1 &&
+                actionText.ToolTip.ToString() == actionText.Text, $"부트 사건 문구 잘림 없음·전체 툴팁 {width}x{height}");
+            Check(eventGrid.Columns[2].ActualWidth >= 75 && eventGrid.Columns[3].ActualWidth >= 240 &&
+                eventGrid.Columns[4].ActualWidth >= 160, "구분 자동 너비가 PID·이미지·대상 경로 최소폭을 줄이지 않음");
         }
         FrameworkElement content = (FrameworkElement)window.FindName("FileTabContent");
         foreach ((string left, string right) in new[]

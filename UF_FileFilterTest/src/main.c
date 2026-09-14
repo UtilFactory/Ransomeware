@@ -48,7 +48,7 @@ UfFileEventActionText(unsigned long Action)
     switch (Action) {
     case UfEventBootDenied: return L"부트 영역 차단";
     case UfEventBootInspectionFailed: return L"부트 검사 실패(통과)";
-    case UfEventBootInspectionDenied: return L"부트 검사 실패(차단)";
+    case UfEventBootInspectionDenied: return L"부트 쓰기 차단 — 검사 오류";
     case UfEventDenied: return L"차단";
     default: return L"감시";
     }
