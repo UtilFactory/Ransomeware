@@ -11,6 +11,14 @@ namespace RansomUtilFactory.UI;
 public partial class MainWindow : Window
 {
     private const int MaxLogCount = 2000;
+    // 일반적인 이름 오름차순에서 앞에 표시되도록 고정된 식별자 앞에 특수 문자를 붙입니다.
+    private const string HiddenFolderName = "!D4E91A";
+    private static readonly Environment.SpecialFolder[] DecoySpecialFolders =
+    [
+        Environment.SpecialFolder.MyDocuments,
+        Environment.SpecialFolder.MyMusic,
+        Environment.SpecialFolder.MyVideos
+    ];
     private readonly NativeMethods.EventCallbackV2 _eventCallback;
     private bool _connected;
     private bool _policyOperationRunning;
@@ -41,6 +49,12 @@ public partial class MainWindow : Window
     {
         UiLogger.Info("감시 폴더 추가 버튼 클릭");
         AddFolder(MonitorFolders, "감시 폴더");
+    }
+
+    private void CreateHiddenMonitorFolder_Click(object sender, RoutedEventArgs e)
+    {
+        UiLogger.Info("숨김 감시 폴더 생성 버튼 클릭");
+        CreateHiddenFolder(MonitorFolders, "감시 폴더");
     }
 
     private void AddProtectFolder_Click(object sender, RoutedEventArgs e)
@@ -80,6 +94,35 @@ public partial class MainWindow : Window
         }
     }
 
+    private void CreateHiddenProtectFolder_Click(object sender, RoutedEventArgs e)
+    {
+        UiLogger.Info("숨김 보호 폴더 생성 버튼 클릭");
+        try
+        {
+            string? path = CreateHiddenFolderPath("보호 폴더의 부모 경로 선택");
+            if (path is null) return;
+            if (ProtectFolders.Any(item => string.Equals(item.Path, path,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                UiLogger.Warn($"숨김 보호 폴더 중복 추가 거부 path={path}");
+                ProtectFolderList.SelectedItem = ProtectFolders.First(item =>
+                    string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase));
+                return;
+            }
+
+            ProtectedFolderEntry entry = new(path);
+            ProtectFolders.Add(entry);
+            ProtectFolderList.SelectedItem = entry;
+            UiLogger.Info($"숨김 보호 폴더 생성·추가 완료 path={path}");
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("숨김 보호 폴더 생성 실패", exception);
+            MessageBox.Show(exception.Message, "숨김 보호 폴더 생성",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void AddFolder(ObservableCollection<string> target, string folderType)
     {
         try
@@ -112,6 +155,196 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private void CreateHiddenFolder(ObservableCollection<string> target, string folderType)
+    {
+        try
+        {
+            string? path = CreateHiddenFolderPath($"{folderType}의 부모 경로 선택");
+            if (path is null) return;
+            if (target.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                UiLogger.Warn($"숨김 {folderType} 중복 추가 거부 path={path}");
+                return;
+            }
+
+            target.Add(path);
+            UiLogger.Info($"숨김 {folderType} 생성·추가 완료 path={path}");
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error($"숨김 {folderType} 생성 실패", exception);
+            MessageBox.Show(exception.Message, $"숨김 {folderType} 생성",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private static string? CreateHiddenFolderPath(string title)
+    {
+        OpenFolderDialog dialog = new()
+        {
+            Title = title,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            UiLogger.Info($"{title} 취소");
+            return null;
+        }
+
+        string parentPath = NormalizeFolderPath(dialog.FolderName);
+        string hiddenPath = NormalizeFolderPath(Path.Combine(parentPath, HiddenFolderName));
+        Directory.CreateDirectory(hiddenPath);
+        FileAttributes attributes = File.GetAttributes(hiddenPath);
+        if (!attributes.HasFlag(FileAttributes.Hidden))
+        {
+            File.SetAttributes(hiddenPath, attributes | FileAttributes.Hidden);
+        }
+        return hiddenPath;
+    }
+
+    private async void CreateDecoyFolders_Click(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show(
+                "모든 고정 로컬 드라이브의 루트와 바로 아래 폴더(1~2단계), " +
+                "문서·음악·동영상·다운로드 폴더에 숨김 미끼 폴더를 생성합니다.\n" +
+                "권한이 없는 경로는 건너뜁니다. 계속하시겠습니까?",
+                "미끼 폴더 생성", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            UiLogger.Info("미끼 폴더 생성 취소");
+            return;
+        }
+
+        CreateDecoyFoldersButton.IsEnabled = false;
+        try
+        {
+            DecoyFolderCreationResult result = await Task.Run(CreateDecoyFolders);
+            string message = $"미끼 폴더 생성 완료\n생성: {result.CreatedCount}개\n" +
+                $"이미 존재: {result.ExistingCount}개\n실패·건너뜀: {result.FailedCount}개";
+            UiLogger.Info($"미끼 폴더 생성 완료 created={result.CreatedCount} " +
+                $"existing={result.ExistingCount} failed={result.FailedCount}");
+            if (result.FailureSamples.Count > 0)
+                UiLogger.Warn($"미끼 폴더 생성 실패 예시: {string.Join(" | ", result.FailureSamples)}");
+            MessageBox.Show(message, "미끼 폴더 생성", MessageBoxButton.OK,
+                result.FailedCount == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception exception)
+        {
+            UiLogger.Error("미끼 폴더 생성 작업 실패", exception);
+            MessageBox.Show(exception.Message, "미끼 폴더 생성",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            CreateDecoyFoldersButton.IsEnabled = true;
+        }
+    }
+
+    private static DecoyFolderCreationResult CreateDecoyFolders()
+    {
+        HashSet<string> targets = new(StringComparer.OrdinalIgnoreCase);
+        List<string> failureSamples = [];
+        int failedCount = 0;
+        foreach (DriveInfo drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                AddDecoyTarget(targets, drive.RootDirectory.FullName);
+                foreach (DirectoryInfo child in drive.RootDirectory.EnumerateDirectories())
+                {
+                    if (child.Name.Equals(HiddenFolderName, StringComparison.OrdinalIgnoreCase) ||
+                        child.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+                    AddDecoyTarget(targets, child.FullName);
+                }
+            }
+            catch (Exception exception)
+            {
+                failedCount++;
+                AddFailureSample(failureSamples, drive.Name, exception);
+            }
+        }
+
+        foreach (Environment.SpecialFolder specialFolder in DecoySpecialFolders)
+        {
+            try
+            {
+                string path = Environment.GetFolderPath(specialFolder);
+                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+                {
+                    failedCount++;
+                    AddFailureSample(failureSamples, specialFolder.ToString(), null);
+                    continue;
+                }
+                AddDecoyTarget(targets, path);
+            }
+            catch (Exception exception)
+            {
+                failedCount++;
+                AddFailureSample(failureSamples, specialFolder.ToString(), exception);
+            }
+        }
+
+        try
+        {
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string downloads = Path.Combine(userProfile, "Downloads");
+            if (string.IsNullOrWhiteSpace(userProfile) || !Directory.Exists(downloads))
+            {
+                failedCount++;
+                AddFailureSample(failureSamples, downloads, null);
+            }
+            else
+                AddDecoyTarget(targets, downloads);
+        }
+        catch (Exception exception)
+        {
+            failedCount++;
+            AddFailureSample(failureSamples, "Downloads", exception);
+        }
+
+        int createdCount = 0;
+        int existingCount = 0;
+        foreach (string parentPath in targets)
+        {
+            string decoyPath = Path.Combine(parentPath, HiddenFolderName);
+            try
+            {
+                bool existed = Directory.Exists(decoyPath);
+                Directory.CreateDirectory(decoyPath);
+                FileAttributes attributes = File.GetAttributes(decoyPath);
+                if (!attributes.HasFlag(FileAttributes.Hidden))
+                    File.SetAttributes(decoyPath, attributes | FileAttributes.Hidden);
+                if (existed) existingCount++;
+                else createdCount++;
+            }
+            catch (Exception exception)
+            {
+                failedCount++;
+                AddFailureSample(failureSamples, decoyPath, exception);
+            }
+        }
+        return new DecoyFolderCreationResult(createdCount, existingCount, failedCount, failureSamples);
+    }
+
+    private static void AddDecoyTarget(HashSet<string> targets, string parentPath)
+    {
+        string normalized = NormalizeFolderPath(parentPath);
+        if (!string.IsNullOrWhiteSpace(normalized)) targets.Add(normalized);
+    }
+
+    private static void AddFailureSample(List<string> samples, string path, Exception? exception)
+    {
+        if (samples.Count >= 12) return;
+        samples.Add(exception is null ? $"{path} (경로 없음)" :
+            $"{path} ({exception.GetType().Name}: {exception.Message})");
+    }
+
+    private sealed record DecoyFolderCreationResult(
+        int CreatedCount,
+        int ExistingCount,
+        int FailedCount,
+        IReadOnlyList<string> FailureSamples);
 
     private static string NormalizeFolderPath(string path)
     {

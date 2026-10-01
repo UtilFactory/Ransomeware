@@ -69,6 +69,8 @@
                             <DockPanel>
                                 <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
                                             HorizontalAlignment="Right" Margin="0,8,0,0">
+                                    <Button Content="숨김 폴더 생성" Click="CreateHiddenMonitorFolder_Click"
+                                            ToolTip="선택한 부모 경로에 숨김 감시 폴더를 만듭니다." />
                                     <Button Content="폴더 추가" Click="AddMonitorFolder_Click" />
                                     <Button Content="선택 제거" Click="RemoveMonitorFolder_Click" />
                                 </StackPanel>
@@ -84,6 +86,8 @@
                                                Text="허용 프로세스마다 읽기·쓰기, 코드 서명 확인 여부와 비교 방식을 설정합니다. 권한을 모두 끄면 정책을 적용할 수 없습니다." />
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                                                 Margin="0,8,0,0">
+                                        <Button Content="숨김 폴더 생성" Click="CreateHiddenProtectFolder_Click"
+                                                ToolTip="선택한 부모 경로에 숨김 보호 폴더를 만듭니다." />
                                         <Button Content="폴더 추가" Click="AddProtectFolder_Click" />
                                         <Button Content="선택 제거" Click="RemoveProtectFolder_Click" />
                                     </StackPanel>
@@ -171,6 +175,9 @@
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Top">
                                 <Button x:Name="InstallFileButton" Content="파일 필터 설치" Click="InstallFileDriver_Click" />
                                 <Button x:Name="UninstallFileButton" Content="파일 필터 제거" Click="UninstallFileDriver_Click" />
+                                <Button x:Name="CreateDecoyFoldersButton" Content="미끼 폴더 생성"
+                                        Click="CreateDecoyFolders_Click"
+                                        ToolTip="고정 드라이브의 1~2단계와 사용자 폴더에 숨김 미끼 폴더를 만듭니다." />
                             </StackPanel>
                             <TextBlock Grid.Column="1" x:Name="FileDriverStatusText"
                                        Text="설치 상태를 확인하지 않았습니다."
